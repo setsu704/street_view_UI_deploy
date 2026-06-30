@@ -56,9 +56,13 @@ const RAW_LOGS = [
   { filename: 'left_20241219_114412.jpg', dx: -51.44, dy: -7.57 },
   { filename: 'left_20241219_114413.jpg', dx: -122.79, dy: -17.78 },
   { filename: 'left_20241219_114414.jpg', dx: 1.95, dy: -0.95 },
-  { filename: 'left_20241219_114416.jpg', dx: -80.39, dy: -24.22 },
-  { filename: 'left_20241219_114417.jpg', dx: 75.91, dy: 14.56 },
-  { filename: 'left_20241219_114418.jpg', dx: -108.06, dy: -32.35 },
+  { filename: 'left_20241219_114416.jpg', dx: 0, dy: 0 },
+  { filename: 'left_20241219_114417.jpg', dx: 0, dy: 0},
+  { filename: 'left_20241219_114418.jpg', dx: 0, dy: 0},
+
+  //{ filename: 'left_20241219_114416.jpg', dx: -80.39, dy: -24.22 },
+  //{ filename: 'left_20241219_114417.jpg', dx: 75.91, dy: 14.56 },
+  //{ filename: 'left_20241219_114418.jpg', dx: -108.06, dy: -32.35 },
 ];
 
 // --- 2. データ処理 ---

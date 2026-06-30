@@ -198,7 +198,7 @@ export default function PanoramaView() {
         <color attach="background" args={['#111']} />
         <ambientLight intensity={2} />
 
-        <Grid 
+        {/* <Grid 
           position={[centerX, -IMAGE_HEIGHT / 2 - 200, 0]} 
           args={[totalWidth * 2, IMAGE_HEIGHT * 2]} 
           cellColor="#333" 
@@ -207,7 +207,7 @@ export default function PanoramaView() {
           fadeDistance={50000}
           cellSize={100} 
           sectionSize={1000} 
-        />
+        /> */}
 
         {processedData.map((img, idx) => (
           <ImagePanel 

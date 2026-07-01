@@ -1,7 +1,18 @@
 import React, { useMemo, useRef, useState, useLayoutEffect } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { Image as DreiImage, Grid, OrbitControls, PerspectiveCamera } from '@react-three/drei';
+import { Image as DreiImage, OrbitControls, PerspectiveCamera } from '@react-three/drei'; // Grid, 
 import * as THREE from 'three';
+
+//時刻表示
+const BUILD_TIME = new Date().toLocaleString("ja-JP", {
+  timeZone: "Asia/Tokyo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit"
+});
 
 // --- 1. 設定 ---
 const IMAGE_WIDTH = 320; 
@@ -165,6 +176,7 @@ const ImagePanel = ({ url, position, index }: {
     }
   }, []);
 
+
   // 滑らかなカメラ移動に合わせて、毎フレーム透明度を計算する
   // (Propsでカメラ位置を受け取ると再レンダリングが頻発するため、refで直接操作する)
   useFrame(({ camera }) => {
@@ -197,15 +209,52 @@ const ImagePanel = ({ url, position, index }: {
   );
 };
 
+// --- CSS Styles ---
+const uiContainerStyle: React.CSSProperties = {
+  position: 'absolute',
+  bottom: '30px',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '20px',
+  zIndex: 10,
+  background: 'rgba(0,0,0,0.7)',
+  padding: '10px 20px',
+  borderRadius: '30px',
+  border: '1px solid #444'
+};
+
+const arrowButtonStyle: React.CSSProperties = {
+  width: '50px',
+  height: '50px',
+  borderRadius: '50%',
+  border: '2px solid #fff',
+  background: '#333',
+  color: '#fff',
+  fontSize: '24px',
+  cursor: 'pointer',
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  transition: 'background 0.2s'
+};
+
+const labelStyle: React.CSSProperties = {
+  color: '#fff',
+  fontFamily: 'monospace',
+  textAlign: 'center',
+  minWidth: '120px'
+};
 // --- 4. メインコンポーネント ---
 
 export default function PanoramaView() {
   const processedData = useMemo(() => processImagesForPanorama(RAW_LOGS), []);
   
   const minX = Math.min(...processedData.map(d => d.position[0]));
-  const maxX = Math.max(...processedData.map(d => d.position[0]));
-  const centerX = (minX + maxX) / 2;
-  const totalWidth = Math.abs(maxX - minX) + IMAGE_WIDTH;
+  //const maxX = Math.max(...processedData.map(d => d.position[0]));
+  //const centerX = (minX + maxX) / 2;
+  //const totalWidth = Math.abs(maxX - minX) + IMAGE_WIDTH;
 
   // 目標位置（Target）を管理するState。
   // カメラの実際の座標（Current）はCameraRig内でLerp計算される。
@@ -217,6 +266,26 @@ export default function PanoramaView() {
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
       
+      {/* 🟢 追加：検証用ビルド日時ヘッダー（Canvasの外側・最前面に配置） */}
+      <header style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        background: 'rgba(230, 255, 250, 0.95)', // 背景が黒なので少し透過させて馴染ませる
+        borderBottom: '2px solid #319795',
+        padding: '10px 0',
+        textAlign: 'center',
+        color: '#234e52',
+        zIndex: 999999, // 3D空間や他のUIより絶対に前に出す
+        pointerEvents: 'none', // マウス操作を透過させ、3D操作の邪魔をしない
+        fontFamily: 'sans-serif'
+      }}>
+        <p style={{ margin: 0, fontSize: '14px', fontWeight: 'bold' }}>
+          検証用ビルド日時: {BUILD_TIME}
+        </p>
+      </header>
+
       <Canvas>
         <PerspectiveCamera 
           makeDefault 
@@ -272,43 +341,5 @@ export default function PanoramaView() {
       </div>
 
     </div>
-  );
+  );  
 }
-
-// --- CSS Styles ---
-const uiContainerStyle: React.CSSProperties = {
-  position: 'absolute',
-  bottom: '30px',
-  left: '50%',
-  transform: 'translateX(-50%)',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '20px',
-  zIndex: 10,
-  background: 'rgba(0,0,0,0.7)',
-  padding: '10px 20px',
-  borderRadius: '30px',
-  border: '1px solid #444'
-};
-
-const arrowButtonStyle: React.CSSProperties = {
-  width: '50px',
-  height: '50px',
-  borderRadius: '50%',
-  border: '2px solid #fff',
-  background: '#333',
-  color: '#fff',
-  fontSize: '24px',
-  cursor: 'pointer',
-  display: 'flex',
-  justifyContent: 'center',
-  alignItems: 'center',
-  transition: 'background 0.2s'
-};
-
-const labelStyle: React.CSSProperties = {
-  color: '#fff',
-  fontFamily: 'monospace',
-  textAlign: 'center',
-  minWidth: '120px'
-};

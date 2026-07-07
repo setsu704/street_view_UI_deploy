@@ -20,6 +20,8 @@ const IMAGE_HEIGHT = 240;
 
 // 移動量
 const MOVE_STEP = 100; 
+//一枚ずつの移動にしたい時
+//const MOVE_STEP = IMAGE_WIDTH
 
 // カメラに「映っている」とみなす範囲
 const VISIBLE_THRESHOLD = IMAGE_WIDTH * 0.8; 
@@ -27,6 +29,9 @@ const VISIBLE_THRESHOLD = IMAGE_WIDTH * 0.8;
 // 透明度設定
 const OPACITY_VISIBLE = 0.8;
 const OPACITY_INVISIBLE = 0.2;
+
+//湾曲の強さ　数値を大きくすると奥に回り込む
+const CURVE_FACTOR = 0.0015
 
 // AKAZEログデータ
 const RAW_LOGS = [
@@ -115,22 +120,59 @@ const RAW_LOGS = [
 ];
 
 // --- 2. データ処理 ---
-const processImagesForPanorama = (logs: typeof RAW_LOGS) => {
+// ---改良版を下に書いたため、コメントアウト---
+const processImagesForPanorama = (logs: typeof RAW_LOGS, width: number) => {
   const result = [];
   let accumulatedX = 0;
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];
-    accumulatedX -= log.dx;
+   
     result.push({
       id: i,
       url: `/images/left/${log.filename}`,
       position: [accumulatedX, 0, 0] as [number, number, number],
       filename: log.filename
     });
+    //2枚目以降の位置決定のために累積
+    //dxが０のときは等間隔に配置されるように設定
+    const stepX = log.dx ! ? log.dx : width;
+    accumulatedX -= stepX;
   }
   return result;
-};
+}; 
 
+// 改良版（imagewidth）のエラーが出たため、いったん保留
+{/*interface Log {
+  filename: string;
+  dx: number; // 前の画像からの相対的な移動量（ピクセルまたは3D単位）
+}
+
+const processImagesForPanorama = (logs: Log[], imageWidth: number) => {
+  const result = [];
+  let accumulatedX = 0; // 1枚目は必ず 0 からスタート
+
+  for (let i = 0; i < logs.length; i++) {
+    const log = logs[i];
+
+    // ① 初項（1枚目）は 0 のまま配置し、2枚目以降のループの「最後」または「次」で累積する
+    result.push({
+      id: i,
+      url: `/images/left/${log.filename}`,
+      position: [accumulatedX, 0, 0] as [number, number, number],
+      filename: log.filename
+    });
+
+    // ② 次の画像のための配置座標を更新（画像幅と移動量を考慮）
+    // dx の仕様に合わせて、以下のいずれかの数式を選択
+    // パターンA (純粋な移動量):
+    accumulatedX -= log.dx; 
+    
+    // パターンB (重複率などを考慮する場合、後述のロジックに差し替え):
+    // accumulatedX -= (imageWidth - log.dx);
+  }
+
+  return result;
+}; */}
 // --- 3. 表示コンポーネント ---
 
 // カメラ制御用コンポーネント（滑らかな移動を追加）
@@ -167,6 +209,7 @@ const ImagePanel = ({ url, position, index }: {
   position: [number, number, number], 
   index: number
 }) => {
+  const groupRef = useRef<THREE.Group>(null!);
   const meshRef = useRef<THREE.Mesh>(null!);
 
   useLayoutEffect(() => {
@@ -180,22 +223,31 @@ const ImagePanel = ({ url, position, index }: {
   // 滑らかなカメラ移動に合わせて、毎フレーム透明度を計算する
   // (Propsでカメラ位置を受け取ると再レンダリングが頻発するため、refで直接操作する)
   useFrame(({ camera }) => {
-    if (!meshRef.current) return;
+    if (!groupRef.current || !meshRef.current) return;
 
     // カメラと画像の距離を計算
-    const distance = Math.abs(position[0] - camera.position.x);
-    
-    // 距離に応じた目標透明度を決定
-    const targetOpacity = distance < VISIBLE_THRESHOLD ? OPACITY_VISIBLE : OPACITY_INVISIBLE;
+    const distanceX = Math.abs(position[0] - camera.position.x);
+    const absDistanceX = Math.abs(distanceX);
 
-    // 現在の透明度から目標の透明度へ滑らかに変化させる（任意）
+    //カメラの正面（distanceX）に近いほど手前に、離れるほど奥に
+    //二次関数を用いてなめらかなカーブを作る
+    const dynamicZ = -Math.pow(distanceX, 2) * CURVE_FACTOR;
+    groupRef.current.position.setZ(dynamicZ);
+
+    //Z軸に下がるだけで小さく見えるが、より強調したい時に有効化する
+    // const dynamicScale = 1 / (1 + absDistanceX * 0.0005);
+    // groupRef.current.scale.set(dynamicScale, dynamicScale, 1);
+
+
+    // 距離に応じた目標透明度を決定,正面付近ならくっきり、離れると薄く
     // 瞬時に切り替えたい場合は meshRef.current.material.opacity = targetOpacity; だけでもOK
+    const targetOpacity = absDistanceX < (IMAGE_WIDTH * 0.6) ? OPACITY_VISIBLE : OPACITY_INVISIBLE;
     const material = meshRef.current.material as THREE.Material;
     material.opacity = THREE.MathUtils.lerp(material.opacity, targetOpacity, 0.1);
   });
 
   return (
-    <group position={position} renderOrder={index}>
+    <group ref={groupRef} position={[position[0], position[1], 0]} renderOrder={index}>
       <DreiImage 
         ref={meshRef}
         url={url} 
@@ -249,19 +301,35 @@ const labelStyle: React.CSSProperties = {
 // --- 4. メインコンポーネント ---
 
 export default function PanoramaView() {
-  const processedData = useMemo(() => processImagesForPanorama(RAW_LOGS), []);
+  const processedData = useMemo(() => processImagesForPanorama(RAW_LOGS, IMAGE_WIDTH), []);
   
-  const minX = Math.min(...processedData.map(d => d.position[0]));
-  //const maxX = Math.max(...processedData.map(d => d.position[0]));
-  //const centerX = (minX + maxX) / 2;
-  //const totalWidth = Math.abs(maxX - minX) + IMAGE_WIDTH;
+  // 初期位置（最初の画像がある場所。今回のロジックでは必ず 0）
+  const initialX = processedData[0]?.position[0] || 0;
 
   // 目標位置（Target）を管理するState。
   // カメラの実際の座標（Current）はCameraRig内でLerp計算される。
-  const [targetCameraX, setTargetCameraX] = useState(minX);
+  // カメラの移動目標（初期値は1枚目の座標 = 0）
+  const [targetCameraX, setTargetCameraX] = useState(initialX);
 
-  const moveLeft = () => setTargetCameraX(prev => prev - MOVE_STEP);
-  const moveRight = () => setTargetCameraX(prev => prev + MOVE_STEP);
+  // 🟢 インデックスベースで移動を制御するためのヘルパー（境界を超えない防衛策）
+  const currentImageIdx = processedData.findIndex(d => d.position[0] === targetCameraX);
+
+  const moveLeft = () => {
+    if (currentImageIdx > 0) {
+      setTargetCameraX(processedData[currentImageIdx - 1].position[0]);
+    }
+  };
+
+  const moveRight = () => {
+    if (currentImageIdx < processedData.length - 1) {
+      setTargetCameraX(processedData[currentImageIdx + 1].position[0]);
+    }
+  };
+
+  //const minX = Math.min(...processedData.map(d => d.position[0]));
+  //const maxX = Math.max(...processedData.map(d => d.position[0]));
+  //const centerX = (minX + maxX) / 2;
+  //const totalWidth = Math.abs(maxX - minX) + IMAGE_WIDTH;
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
@@ -290,8 +358,8 @@ export default function PanoramaView() {
         <PerspectiveCamera 
           makeDefault 
           // 初期位置はminXに設定
-          position={[minX, 0, IMAGE_WIDTH * 1.5]} 
-          fov={50} 
+          position={[initialX, 0, IMAGE_WIDTH * 1.2]} 
+          fov={60} 
           far={100000} 
         />
         
@@ -299,7 +367,7 @@ export default function PanoramaView() {
           makeDefault
           enableDamping 
           dampingFactor={0.1}
-          target={[minX, 0, 0]} 
+          target={[initialX, 0, 0]} 
           enablePan={false} 
         />
 

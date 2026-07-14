@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useLayoutEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { Image as DreiImage, OrbitControls, PerspectiveCamera } from '@react-three/drei'; // Grid, 
+import { Image as DreiImage, OrbitControls, PerspectiveCamera　,Grid } from '@react-three/drei'; // Grid, 
 import * as THREE from 'three';
 
 //時刻表示
@@ -342,16 +342,18 @@ export default function PanoramaView() {
         <color attach="background" args={['#111']} />
         <ambientLight intensity={2} />
 
-        {/* <Grid 
-          position={[centerX, -IMAGE_HEIGHT / 2 - 200, 0]} 
-          args={[totalWidth * 2, IMAGE_HEIGHT * 2]} 
-          cellColor="#333" 
-          sectionColor="#555" 
-          infiniteGrid 
-          fadeDistance={50000}
-          cellSize={100} 
-          sectionSize={1000} 
-        /> */}
+        <Grid 
+          position={[initialX, -IMAGE_HEIGHT / 2 - 0.2, 0]} // 画像の底辺より少し下に配置（高さ調節）
+          args={[2000, 2000]} // グリッドの全体のサイズ [幅, 奥行き]
+          cellSize={5}    // 細かいマスのサイズ
+          cellThickness={5}
+          cellColor="#333333"
+          sectionSize={2.5} // 太線のマスのサイズ
+          sectionThickness={1}
+          sectionColor="#555555"
+          fadeDistance={20}  // 奥にいくほどグリッドが薄れていく距離
+          infiniteGrid      // 無限に床が続いているように見せる
+        />
 
         <Suspense fallback={null}>
           {processedData.map((img, idx) => (

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useLayoutEffect } from 'react';
+import React, { useMemo, useRef, useState, useLayoutEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera } from '@react-three/drei'; // Grid, 
 import * as THREE from 'three';
@@ -15,8 +15,8 @@ const BUILD_TIME = new Date().toLocaleString("ja-JP", {
 });
 
 // --- 1. 設定 ---
-const IMAGE_WIDTH = 320; 
-const IMAGE_HEIGHT = 240;
+const IMAGE_WIDTH = 3.2; 
+const IMAGE_HEIGHT = 2.4;
 
 // 移動量
 const MOVE_STEP = 100; 
@@ -31,7 +31,7 @@ const OPACITY_VISIBLE = 0.8;
 const OPACITY_INVISIBLE = 0.2;
 
 //湾曲の強さ　数値を大きくすると奥に回り込む
-const CURVE_FACTOR = 0.0015
+const CURVE_FACTOR = 0.015
 
 // AKAZEログデータ
 const RAW_LOGS = [
@@ -135,7 +135,7 @@ const processImagesForPanorama = (logs: typeof RAW_LOGS, width: number) => {
     });
     //2枚目以降の位置決定のために累積
     //dxが０のときは等間隔に配置されるように設定
-    const stepX = log.dx ! ? log.dx : width;
+    const stepX = log.dx ? (log.dx / 100) : width;
     accumulatedX -= stepX;
   }
   return result;
@@ -312,7 +312,10 @@ export default function PanoramaView() {
   const [targetCameraX, setTargetCameraX] = useState(initialX);
 
   // 🟢 インデックスベースで移動を制御するためのヘルパー（境界を超えない防衛策）
-  const currentImageIdx = processedData.findIndex(d => d.position[0] === targetCameraX);
+  const currentImageIdx = useMemo(() => {
+    const idx = processedData.findIndex(d => Math.abs(d.position[0] -targetCameraX) < 0.001);
+    return idx === -1 ? 0 : idx;
+  }, [processedData, targetCameraX]);
 
   const moveLeft = () => {
     if (currentImageIdx > 0) {
@@ -358,7 +361,7 @@ export default function PanoramaView() {
         <PerspectiveCamera 
           makeDefault 
           // 初期位置はminXに設定
-          position={[initialX, 0, IMAGE_WIDTH * 1.2]} 
+          position={[initialX, 0, IMAGE_WIDTH * 1.5]} 
           fov={60} 
           far={100000} 
         />
@@ -388,7 +391,8 @@ export default function PanoramaView() {
           sectionSize={1000} 
         /> */}
 
-        {processedData.map((img, idx) => (
+        <Suspense fallback={null}>
+          {processedData.map((img, idx) => (
           <ImagePanel 
             key={img.id} 
             index={idx}
@@ -396,7 +400,8 @@ export default function PanoramaView() {
             position={img.position}
             // ImagePanel自体がuseFrameでカメラ位置を取得するため、currentCameraXのProps渡しは不要
           />
-        ))}
+        ))}</Suspense>
+        
       </Canvas>
 
       <div style={uiContainerStyle}>

@@ -242,8 +242,11 @@ const ImagePanel = ({ url, position, index }: {
     // 距離に応じた目標透明度を決定,正面付近ならくっきり、離れると薄く
     // 瞬時に切り替えたい場合は meshRef.current.material.opacity = targetOpacity; だけでもOK
     const targetOpacity = absDistanceX < (IMAGE_WIDTH * 0.6) ? OPACITY_VISIBLE : OPACITY_INVISIBLE;
-    const material = meshRef.current.material as THREE.Material;
-    material.opacity = THREE.MathUtils.lerp(material.opacity, targetOpacity, 0.1);
+    const material = meshRef.current.material;
+    if (material && 'opacity' in material) {
+     // 🟢 括弧の位置、スペル、カンマをすべて修正
+      (material as any).opacity = THREE.MathUtils.lerp((material as any).opacity, targetOpacity, 0.1);
+    }
   });
 
   return (

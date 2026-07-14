@@ -24,7 +24,7 @@ const MOVE_STEP = 100;
 //const MOVE_STEP = IMAGE_WIDTH
 
 // カメラに「映っている」とみなす範囲
-const VISIBLE_THRESHOLD = IMAGE_WIDTH * 0.8; 
+// const VISIBLE_THRESHOLD = IMAGE_WIDTH * 0.8; 
 
 // 透明度設定
 const OPACITY_VISIBLE = 0.8;

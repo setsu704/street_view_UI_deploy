@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useLayoutEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { Image as DreiImage, OrbitControls, PerspectiveCamera　,Grid } from '@react-three/drei'; // Grid, 
+import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line } from '@react-three/drei'; // Line を追加
 import * as THREE from 'three';
 
 //時刻表示
@@ -30,8 +30,11 @@ const MOVE_STEP = 100;
 const OPACITY_VISIBLE = 0.9;
 const OPACITY_INVISIBLE = 0.5;
 
-//湾曲の強さ　数値を大きくすると奥に回り込む
-const CURVE_FACTOR = 0.000015
+//湾曲の強さ 数値を大きくすると奥に回り込む
+const CURVE_FACTOR = 0.000015;
+
+// 【追加】表示モードの型定義
+export type ViewMode = 'plane' | 'cylinder' | 'tunnel';
 
 // AKAZEログデータ
 const RAW_LOGS = [
@@ -85,11 +88,19 @@ const processImagesForPanorama = (logs: typeof RAW_LOGS, width: number) => {
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];
    
+    // 【追加】AKAZE特徴点の模擬データ（画像ローカル座標 -0.5〜0.5 相当）
+    const featurePoints: [number, number][] = [
+      [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
+      [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
+      [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8]
+    ];
+
     result.push({
       id: i,
       url: `/images/left/${log.filename}`,
       position: [accumulatedX, 0, 0] as [number, number, number],
-      filename: log.filename
+      filename: log.filename,
+      featurePoints // 【追加】
     });
     //2枚目以降の位置決定のために累積
     //dxが０のときは等間隔に配置されるように設定
@@ -162,10 +173,13 @@ const CameraRig = ({ targetX }: { targetX: number }) => {
   return null;
 };
 
-const ImagePanel = ({ url, position, index }: { 
+// 【追加パラメータ対応】mode, curveFactor を受け取れるように拡張
+const ImagePanel = ({ url, position, index, mode = 'cylinder', curveFactor = CURVE_FACTOR }: { 
   url: string, 
   position: [number, number, number], 
-  index: number
+  index: number,
+  mode?: ViewMode, // 【追加】
+  curveFactor?: number // 【追加】
 }) => {
   const groupRef = useRef<THREE.Group>(null!);
   const meshRef = useRef<THREE.Mesh>(null!);
@@ -177,7 +191,6 @@ const ImagePanel = ({ url, position, index }: {
     }
   }, []);
 
-
   // 滑らかなカメラ移動に合わせて、毎フレーム透明度を計算する
   // (Propsでカメラ位置を受け取ると再レンダリングが頻発するため、refで直接操作する)
   useFrame(({ camera }) => {
@@ -187,9 +200,15 @@ const ImagePanel = ({ url, position, index }: {
     const distanceX = Math.abs(position[0] - camera.position.x);
     const absDistanceX = Math.abs(distanceX);
 
-    //カメラの正面（distanceX）に近いほど手前に、離れるほど奥に
-    //二次関数を用いてなめらかなカーブを作る
-    const dynamicZ = -Math.pow(distanceX, 2) * CURVE_FACTOR;
+    // 【追加】モードに応じた動的Z軸位置計算
+    let dynamicZ = 0;
+    if (mode === 'cylinder') {
+      dynamicZ = -Math.pow(distanceX, 2) * curveFactor;
+    } else if (mode === 'tunnel') {
+      dynamicZ = -Math.pow(distanceX, 2.5) * (curveFactor * 10);
+    } else {
+      dynamicZ = 0; // plane モード
+    }
     groupRef.current.position.setZ(dynamicZ);
 
     //Z軸に下がるだけで小さく見えるが、より強調したい時に有効化する
@@ -219,6 +238,51 @@ const ImagePanel = ({ url, position, index }: {
         opacity={OPACITY_INVISIBLE}
         side={THREE.DoubleSide}
       />
+    </group>
+  );
+};
+
+// 【追加】AKAZE 3D マッチング線描画コンポーネント
+const FeatureMatchLines = ({ items }: { items: ReturnType<typeof processImagesForPanorama> }) => {
+  const lines = useMemo(() => {
+    const result: { id: string; points: THREE.Vector3[] }[] = [];
+
+    for (let i = 0; i < items.length - 1; i++) {
+      const imgA = items[i];
+      const imgB = items[i + 1];
+
+      imgA.featurePoints.forEach((ptA, ptIdx) => {
+        const ptB = imgB.featurePoints[ptIdx] || imgB.featurePoints[0];
+
+        const start = new THREE.Vector3(imgA.position[0] + ptA[0], ptA[1], 0.1);
+        const end = new THREE.Vector3(imgB.position[0] + ptB[0], ptB[1], 0.1);
+
+        const midX = (start.x + end.x) / 2;
+        const midY = (start.y + end.y) / 2;
+        const midZ = 0.8;
+
+        const curve = new THREE.QuadraticBezierCurve3(start, new THREE.Vector3(midX, midY, midZ), end);
+        result.push({
+          id: `${i}-${ptIdx}`,
+          points: curve.getPoints(20)
+        });
+      });
+    }
+    return result;
+  }, [items]);
+
+  return (
+    <group>
+      {lines.map((line) => (
+        <Line
+          key={line.id}
+          points={line.points}
+          color="#00ffcc"
+          lineWidth={1.5}
+          transparent
+          opacity={0.6}
+        />
+      ))}
     </group>
   );
 };
@@ -260,6 +324,23 @@ const labelStyle: React.CSSProperties = {
   textAlign: 'center',
   minWidth: '120px'
 };
+
+// 【追加】右上コントロールパネル用スタイル
+const controlPanelStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '50px',
+  right: '20px',
+  zIndex: 100,
+  background: 'rgba(0, 0, 0, 0.75)',
+  padding: '16px',
+  borderRadius: '12px',
+  border: '1px solid #444',
+  color: '#fff',
+  width: '220px',
+  fontFamily: 'sans-serif',
+  fontSize: '12px'
+};
+
 // --- 4. メインコンポーネント ---
 
 export default function PanoramaView() {
@@ -272,6 +353,11 @@ export default function PanoramaView() {
   // カメラの実際の座標（Current）はCameraRig内でLerp計算される。
   // カメラの移動目標（初期値は1枚目の座標 = 0）
   const [targetCameraX, setTargetCameraX] = useState(initialX);
+
+  // 【追加】インタラクションコントロール用State
+  const [viewMode, setViewMode] = useState<ViewMode>('cylinder');
+  const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
+  const [showMatches, setShowMatches] = useState(true);
 
   // 🟢 インデックスベースで移動を制御するためのヘルパー（境界を超えない防衛策）
   const currentImageIdx = useMemo(() => {
@@ -319,6 +405,46 @@ export default function PanoramaView() {
         </p>
       </header>
 
+      {/* 【追加】3D表示制御パネル（UI） */}
+      <div style={controlPanelStyle}>
+        <div style={{ fontWeight: 'bold', marginBottom: '10px', color: '#00ffcc' }}>3D View Controls</div>
+        
+        <label style={{ display: 'block', marginBottom: '4px' }}>Depth Mode:</label>
+        <select 
+          value={viewMode} 
+          onChange={(e) => setViewMode(e.target.value as ViewMode)}
+          style={{ width: '100%', padding: '6px', background: '#222', color: '#fff', border: '1px solid #555', borderRadius: '4px', marginBottom: '12px' }}
+        >
+          <option value="plane">Plane (Flat)</option>
+          <option value="cylinder">Cylinder (Curved)</option>
+          <option value="tunnel">Tunnel (Deep)</option>
+        </select>
+
+        {viewMode !== 'plane' && (
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ display: 'block', marginBottom: '4px' }}>Curve Factor:</label>
+            <input 
+              type="range" 
+              min="0.000005" 
+              max="0.000050" 
+              step="0.000005" 
+              value={curveFactor}
+              onChange={(e) => setCurveFactor(parseFloat(e.target.value))}
+              style={{ width: '100%' }}
+            />
+          </div>
+        )}
+
+        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
+          <input 
+            type="checkbox" 
+            checked={showMatches} 
+            onChange={(e) => setShowMatches(e.target.checked)} 
+          />
+          Show AKAZE Matches
+        </label>
+      </div>
+
       <Canvas>
         <PerspectiveCamera 
           makeDefault 
@@ -340,6 +466,7 @@ export default function PanoramaView() {
         <CameraRig targetX={targetCameraX} />
 
         <color attach="background" args={['#111']} />
+
         <ambientLight intensity={2} />
 
         <Grid 
@@ -362,10 +489,16 @@ export default function PanoramaView() {
             index={idx}
             url={img.url} 
             position={img.position}
+            mode={viewMode} // 【追加】
+            curveFactor={curveFactor} // 【追加】
             // ImagePanel自体がuseFrameでカメラ位置を取得するため、currentCameraXのProps渡しは不要
           />
-        ))}</Suspense>
-        
+        ))}
+
+        {/* 【追加】AKAZE特徴点マッチング線のトグル表示 */}
+        {showMatches && <FeatureMatchLines items={processedData} />}
+        </Suspense>
+
       </Canvas>
 
       <div style={uiContainerStyle}>

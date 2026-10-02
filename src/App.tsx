@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useLayoutEffect, Suspense } from 'react';
+import React, { useMemo, useRef, useState, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line } from '@react-three/drei';
 import * as THREE from 'three';

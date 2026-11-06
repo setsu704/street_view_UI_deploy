@@ -18,7 +18,7 @@ const BUILD_TIME = new Date().toLocaleString("ja-JP", {
 // --- 1. 設定 & 型定義 ---
 const IMAGE_WIDTH = 3.2; 
 const IMAGE_HEIGHT = 2.4;
-const MOVE_STEP = 100; 
+const MOVE_STEP = 50; 
 
 const OPACITY_VISIBLE = 0.9;
 const OPACITY_INVISIBLE = 0.5;

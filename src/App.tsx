@@ -1,7 +1,8 @@
-import React, { useMemo, useRef, useState, Suspense } from 'react';
+import React, { useMemo, useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line } from '@react-three/drei';
 import * as THREE from 'three';
+import Papa from 'papaparse';
 
 // 時刻表示
 const BUILD_TIME = new Date().toLocaleString("ja-JP", {
@@ -14,7 +15,7 @@ const BUILD_TIME = new Date().toLocaleString("ja-JP", {
   second: "2-digit"
 });
 
-// --- 1. 設定 ---
+// --- 1. 設定 & 型定義 ---
 const IMAGE_WIDTH = 3.2; 
 const IMAGE_HEIGHT = 2.4;
 const MOVE_STEP = 100; 
@@ -25,57 +26,34 @@ const CURVE_FACTOR = 0.000015;
 
 export type ViewMode = 'plane' | 'cylinder' | 'tunnel';
 
-// AKAZEログデータ
-const RAW_LOGS = [
-  { filename: 'left_20241219_114330_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114331_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114332_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114333_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114335_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114336_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114337_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114338_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114340_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114341_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114342_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114343_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114345_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114346_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114347_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114348_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114349_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114351_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114352_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114353_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114354_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114356_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114357_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114358_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114359_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114401_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114402_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114403_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114404_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114406_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114407_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114408_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114409_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114411_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114412_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114413_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114414_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114416_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114417_rgba.png', dx: 0, dy: 0 },
-  { filename: 'left_20241219_114418_rgba.png', dx: 0, dy: 0 },
-];
+export interface LogEntry {
+  filename: string;
+  dx: string | number;
+  dy: string | number;
+}
 
-// --- 2. データ処理 ---
-const processImagesForPanorama = (logs: typeof RAW_LOGS, width: number) => {
+// --- 2. データ処理 (dx, dyから2D累積位置を計算) ---
+const processImagesForPanorama = (logs: LogEntry[], width: number) => {
   const result = [];
   let accumulatedX = 0;
+  let accumulatedY = 0;
+
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];
-    
+    const dxNum = typeof log.dx === 'string' ? parseFloat(log.dx) : (log.dx || 0);
+    const dyNum = typeof log.dy === 'string' ? parseFloat(log.dy) : (log.dy || 0);
+
+    // 1番目の画像(i=0)は基準点(0,0)に配置
+    if (i > 0) {
+      // 基準ピクセル移動量を3D空間スケールに変換
+      const stepX = dxNum ? (dxNum / 100) : width;
+      const stepY = dyNum ? (dyNum / 100) : 0;
+      
+      accumulatedX -= stepX;
+      accumulatedY += stepY; // 3D空間のY軸正方向と合わせる
+    }
+
+    // 可視化用の特徴点（ダミー表示用）
     const featurePoints: [number, number][] = [
       [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
       [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
@@ -85,33 +63,38 @@ const processImagesForPanorama = (logs: typeof RAW_LOGS, width: number) => {
     result.push({
       id: i,
       url: `/images/left/${log.filename}`,
-      position: [accumulatedX, 0, 0] as [number, number, number],
+      position: [accumulatedX, accumulatedY, 0] as [number, number, number],
       filename: log.filename,
       featurePoints
     });
-    const stepX = log.dx ? (log.dx / 100) : width;
-    accumulatedX -= stepX;
   }
   return result;
 }; 
 
-// --- 3. 表示コンポーネント ---
+// --- 3. 3D サブコンポーネント ---
 
-const CameraRig = ({ targetX }: { targetX: number }) => {
+const CameraRig = ({ targetX, targetY }: { targetX: number; targetY: number }) => {
   const { camera, controls } = useThree();
   
   useFrame((_, delta) => {
     const dampSpeed = 5 * delta;
     const currentX = camera.position.x;
+    const currentY = camera.position.y;
+    
     const nextX = THREE.MathUtils.lerp(currentX, targetX, dampSpeed);
-    camera.position.setX(nextX);
+    const nextY = THREE.MathUtils.lerp(currentY, targetY, dampSpeed);
+    
+    camera.position.set(nextX, nextY, camera.position.z);
 
     if (controls) {
       const orbit = controls as unknown as { target: THREE.Vector3; update: () => void };
       const currentTargetX = orbit.target.x;
-      const nextTargetX = THREE.MathUtils.lerp(currentTargetX, targetX, dampSpeed);
+      const currentTargetY = orbit.target.y;
       
-      orbit.target.setX(nextTargetX);
+      const nextTargetX = THREE.MathUtils.lerp(currentTargetX, targetX, dampSpeed);
+      const nextTargetY = THREE.MathUtils.lerp(currentTargetY, targetY, dampSpeed);
+      
+      orbit.target.set(nextTargetX, nextTargetY, orbit.target.z);
       orbit.update();
     }
   });
@@ -142,7 +125,9 @@ const ImagePanel = ({ url, position, index, mode = 'cylinder', curveFactor = CUR
     } else {
       dynamicZ = 0;
     }
-    groupRef.current.position.setZ(dynamicZ);
+    
+    // X, Y, Z の位置を設定
+    groupRef.current.position.set(position[0], position[1], dynamicZ);
 
     const isFront = distanceX < (IMAGE_WIDTH * 0.5);
     groupRef.current.renderOrder = isFront ? 999 : index;
@@ -155,7 +140,7 @@ const ImagePanel = ({ url, position, index, mode = 'cylinder', curveFactor = CUR
   });
 
   return (
-    <group ref={groupRef} position={[position[0], position[1], 0]} renderOrder={index}>
+    <group ref={groupRef} position={[position[0], position[1], position[2]]} renderOrder={index}>
       <DreiImage 
         ref={meshRef}
         url={url} 
@@ -179,8 +164,8 @@ const FeatureMatchLines = ({ items }: { items: ReturnType<typeof processImagesFo
       imgA.featurePoints.forEach((ptA, ptIdx) => {
         const ptB = imgB.featurePoints[ptIdx] || imgB.featurePoints[0];
 
-        const start = new THREE.Vector3(imgA.position[0] + ptA[0], ptA[1], 0.1);
-        const end = new THREE.Vector3(imgB.position[0] + ptB[0], ptB[1], 0.1);
+        const start = new THREE.Vector3(imgA.position[0] + ptA[0], imgA.position[1] + ptA[1], 0.1);
+        const end = new THREE.Vector3(imgB.position[0] + ptB[0], imgB.position[1] + ptB[1], 0.1);
 
         const midX = (start.x + end.x) / 2;
         const midY = (start.y + end.y) / 2;
@@ -265,37 +250,44 @@ const controlPanelStyle: React.CSSProperties = {
   fontSize: '12px'
 };
 
-// --- 4. メインコンポーネント ---
+// --- 4. 3D パノラマ表示コンポーネント ---
+function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
+  const processedData = useMemo(() => processImagesForPanorama(rawLogs, IMAGE_WIDTH), [rawLogs]);
+  const initialPos = processedData[0]?.position || [0, 0, 0];
 
-export default function PanoramaView() {
-  const processedData = useMemo(() => processImagesForPanorama(RAW_LOGS, IMAGE_WIDTH), []);
-  const initialX = processedData[0]?.position[0] || 0;
-
-  const [targetCameraX, setTargetCameraX] = useState(initialX);
+  const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>( [initialPos[0], initialPos[1]] );
   const [viewMode, setViewMode] = useState<ViewMode>('cylinder');
   const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
   const [showMatches, setShowMatches] = useState(true);
 
+  // データ更新時にカメラ位置をリセット
+  useEffect(() => {
+    if (processedData.length > 0) {
+      setTargetCameraPos([processedData[0].position[0], processedData[0].position[1]]);
+    }
+  }, [processedData]);
+
   const currentImageIdx = useMemo(() => {
-    const idx = processedData.findIndex(d => Math.abs(d.position[0] - targetCameraX) < 0.001);
+    const idx = processedData.findIndex(d => Math.abs(d.position[0] - targetCameraPos[0]) < 0.001);
     return idx === -1 ? 0 : idx;
-  }, [processedData, targetCameraX]);
+  }, [processedData, targetCameraPos]);
 
   const moveLeft = () => {
     if (currentImageIdx > 0) {
-      setTargetCameraX(processedData[currentImageIdx - 1].position[0]);
+      const prev = processedData[currentImageIdx - 1];
+      setTargetCameraPos([prev.position[0], prev.position[1]]);
     }
   };
 
   const moveRight = () => {
     if (currentImageIdx < processedData.length - 1) {
-      setTargetCameraX(processedData[currentImageIdx + 1].position[0]);
+      const next = processedData[currentImageIdx + 1];
+      setTargetCameraPos([next.position[0], next.position[1]]);
     }
   };
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
-      
       <header style={{
         position: 'absolute',
         top: 0,
@@ -357,7 +349,7 @@ export default function PanoramaView() {
       <Canvas>
         <PerspectiveCamera 
           makeDefault 
-          position={[initialX, 0, IMAGE_WIDTH * 1.5]} 
+          position={[initialPos[0], initialPos[1], IMAGE_WIDTH * 1.5]} 
           fov={60} 
           far={100000} 
         />
@@ -366,19 +358,17 @@ export default function PanoramaView() {
           makeDefault
           enableDamping 
           dampingFactor={0.1}
-          target={[initialX, 0, 0]} 
+          target={[initialPos[0], initialPos[1], 0]} 
           enablePan={false} 
         />
 
-        <CameraRig targetX={targetCameraX} />
+        <CameraRig targetX={targetCameraPos[0]} targetY={targetCameraPos[1]} />
 
         <color attach="background" args={['#111']} />
-
         <ambientLight intensity={2} />
 
-        {/* 🟢 修正：Grid の線幅（cellThickness）を 5 から 0.2 に修正 */}
         <Grid 
-          position={[initialX, -IMAGE_HEIGHT / 2 - 0.2, 0]} 
+          position={[initialPos[0], -IMAGE_HEIGHT / 2 - 0.2, 0]} 
           args={[2000, 2000]} 
           cellSize={1}     
           cellThickness={0.2}
@@ -410,12 +400,41 @@ export default function PanoramaView() {
       <div style={uiContainerStyle}>
         <button style={arrowButtonStyle} onClick={moveLeft}>←</button>
         <div style={labelStyle}>
-          Target: {Math.round(targetCameraX)} <br/>
+          Target X: {Math.round(targetCameraPos[0])} <br/>
           <span style={{fontSize:'10px', color:'#888'}}>Step: {MOVE_STEP}px</span>
         </div>
         <button style={arrowButtonStyle} onClick={moveRight}>→</button>
       </div>
-
     </div>
   );  
+}
+
+// --- 5. メインAppコンポーネント (images_a_50.csv 読み込み) ---
+export default function App() {
+  const [data, setData] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // 読み込み対象を images_a_50.csv に指定
+    Papa.parse('/images_a_50.csv', {
+      download: true,
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        console.log('読み込んだデータ:', results.data);
+        setData(results.data as LogEntry[]);
+        setLoading(false);
+      },
+      error: (error) => {
+        console.error('CSV読み込みエラー:', error);
+        setLoading(false);
+      }
+    });
+  }, []);
+
+  if (loading) {
+    return <div style={{ color: '#fff', padding: '20px' }}>CSVデータを読み込み中...</div>;
+  }
+
+  return <PanoramaView rawLogs={data} />;
 }

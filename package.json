@@ -12,9 +12,11 @@
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
+    "@types/papaparse": "^5.5.2",
     "@types/three": "^0.182.0",
     "lucide-react": "^0.562.0",
     "onnxruntime-web": "^1.31.1",
+    "papaparse": "^5.7.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.182.0"

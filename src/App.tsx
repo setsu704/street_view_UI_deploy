@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import Papa from 'papaparse';
+import Papa, { type ParseResult } from 'papaparse';
 import * as ort from 'onnxruntime-web';
 
 // 時刻表示
@@ -58,7 +58,6 @@ async function runYolo26Detection(
     img.crossOrigin = 'Anonymous';
     img.onload = async () => {
       try {
-        // 1. 640x640のCanvasにリサイズ描画して前処理
         const canvas = document.createElement('canvas');
         canvas.width = YOLO_INPUT_SIZE;
         canvas.height = YOLO_INPUT_SIZE;
@@ -68,7 +67,6 @@ async function runYolo26Detection(
         ctx.drawImage(img, 0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
         const imageData = ctx.getImageData(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE).data;
 
-        // RGBのFloat32Tensor (1, 3, 640, 640) に変換 (0.0 - 1.0正規化)
         const float32Data = new Float32Array(3 * YOLO_INPUT_SIZE * YOLO_INPUT_SIZE);
         const stride = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
         for (let i = 0; i < stride; i++) {
@@ -81,16 +79,14 @@ async function runYolo26Detection(
         const feeds: Record<string, ort.Tensor> = {};
         feeds[session.inputNames[0]] = inputTensor;
 
-        // 2. YOLO26n 推論実行
         const results = await session.run(feeds);
         const output = results[session.outputNames[0]];
         const data = output.data as Float32Array;
-        const dims = output.dims; // YOLO26 (NMS-free) 出力想定: [1, num_boxes, 6] -> [x1, y1, x2, y2, score, class_id]
+        const dims = output.dims;
 
         const boxes: DetectionBox[] = [];
 
         if (dims.length === 3 && dims[2] === 6) {
-          // NMS-free End-to-End 出力形式 [1, N, 6]
           const numDetections = dims[1];
           for (let i = 0; i < numDetections; i++) {
             const offset = i * 6;
@@ -107,7 +103,6 @@ async function runYolo26Detection(
             }
           }
         } else if (dims.length === 3) {
-          // 従来型出力 [1, 4 + num_classes, num_anchors] へのフォールバック対応
           const numChannels = dims[1];
           const numAnchors = dims[2];
           for (let i = 0; i < numAnchors; i++) {
@@ -209,7 +204,6 @@ const TomatoBoundingBoxes = ({ detections }: { detections: DetectionBox[] }) => 
   return (
     <group position={[0, 0, 0.02]}>
       {detections.map((box, idx) => {
-        // 正規化座標(0~1, 左上原点) を Three.js のローカル座標(中央原点, Y上向き)に変換
         const left = (box.x1 - 0.5) * IMAGE_WIDTH;
         const right = (box.x2 - 0.5) * IMAGE_WIDTH;
         const top = (0.5 - box.y1) * IMAGE_HEIGHT;
@@ -290,7 +284,11 @@ const ImagePanel = ({
     const targetOpacity = distanceX < (IMAGE_WIDTH * 0.6) ? OPACITY_VISIBLE : OPACITY_INVISIBLE;
     const material = meshRef.current.material;
     if (material && 'opacity' in material) {
-      (material as any).opacity = THREE.MathUtils.lerp((material as any).opacity, targetOpacity, 0.1);
+      (material as THREE.Material & { opacity: number }).opacity = THREE.MathUtils.lerp(
+        (material as THREE.Material & { opacity: number }).opacity,
+        targetOpacity,
+        0.1
+      );
     }
   });
 
@@ -304,7 +302,6 @@ const ImagePanel = ({
         opacity={OPACITY_INVISIBLE}
         side={THREE.DoubleSide}
       />
-      {/* YOLO26n 検出結果の赤枠をパネルに追従させて描画 */}
       {showDetections && <TomatoBoundingBoxes detections={detections} />}
     </group>
   );
@@ -418,11 +415,9 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
   const [showMatches, setShowMatches] = useState(true);
   const [showDetections, setShowDetections] = useState(true);
 
-  // YOLO26n 検出結果ステート (filename -> DetectionBox[])
   const [detectionsMap, setDetectionsMap] = useState<Record<string, DetectionBox[]>>({});
   const [yoloStatus, setYoloStatus] = useState<string>('YOLO26n モデル読込中...');
 
-  // YOLO26n モデルのロードと全画像に対する推論実行
   useEffect(() => {
     let isCancelled = false;
 
@@ -636,16 +631,16 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Papa.parse('/images_a_50.csv', {
+    Papa.parse<LogEntry>('/images_a_50.csv', {
       download: true,
       header: true,
       skipEmptyLines: true,
-      complete: (results) => {
+      complete: (results: ParseResult<LogEntry>) => {
         console.log('読み込んだデータ:', results.data);
-        setData(results.data as LogEntry[]);
+        setData(results.data);
         setLoading(false);
       },
-      error: (error) => {
+      error: (error: Error) => {
         console.error('CSV読み込みエラー:', error);
         setLoading(false);
       }

@@ -1,8 +1,9 @@
 import React, { useMemo, useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line } from '@react-three/drei';
+import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import Papa from 'papaparse';
+import * as ort from 'onnxruntime-web';
 
 // 時刻表示
 const BUILD_TIME = new Date().toLocaleString("ja-JP", {
@@ -24,6 +25,11 @@ const OPACITY_VISIBLE = 0.9;
 const OPACITY_INVISIBLE = 0.5;
 const CURVE_FACTOR = 0.000015;
 
+// YOLO26n モデル設定
+const YOLO_MODEL_URL = '/models/yolo26n.onnx';
+const YOLO_INPUT_SIZE = 640;
+const CONFIDENCE_THRESHOLD = 0.45; // 検出信頼度のしきい値
+
 export type ViewMode = 'plane' | 'cylinder' | 'tunnel';
 
 export interface LogEntry {
@@ -32,7 +38,113 @@ export interface LogEntry {
   dy: string | number;
 }
 
-// --- 2. データ処理 (dx, dyから2D累積位置を計算) ---
+// 検出されたトマトのバウンディングボックス（0.0〜1.0の正規化座標）
+export interface DetectionBox {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  score: number;
+  label: string;
+}
+
+// --- 2. YOLO26n (ONNX) 推論ユーティリティ ---
+async function runYolo26Detection(
+  session: ort.InferenceSession,
+  imageUrl: string
+): Promise<DetectionBox[]> {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.crossOrigin = 'Anonymous';
+    img.onload = async () => {
+      try {
+        // 1. 640x640のCanvasにリサイズ描画して前処理
+        const canvas = document.createElement('canvas');
+        canvas.width = YOLO_INPUT_SIZE;
+        canvas.height = YOLO_INPUT_SIZE;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve([]);
+
+        ctx.drawImage(img, 0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
+        const imageData = ctx.getImageData(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE).data;
+
+        // RGBのFloat32Tensor (1, 3, 640, 640) に変換 (0.0 - 1.0正規化)
+        const float32Data = new Float32Array(3 * YOLO_INPUT_SIZE * YOLO_INPUT_SIZE);
+        const stride = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
+        for (let i = 0; i < stride; i++) {
+          float32Data[i] = imageData[i * 4] / 255.0;               // R
+          float32Data[i + stride] = imageData[i * 4 + 1] / 255.0;  // G
+          float32Data[i + stride * 2] = imageData[i * 4 + 2] / 255.0; // B
+        }
+
+        const inputTensor = new ort.Tensor('float32', float32Data, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
+        const feeds: Record<string, ort.Tensor> = {};
+        feeds[session.inputNames[0]] = inputTensor;
+
+        // 2. YOLO26n 推論実行
+        const results = await session.run(feeds);
+        const output = results[session.outputNames[0]];
+        const data = output.data as Float32Array;
+        const dims = output.dims; // YOLO26 (NMS-free) 出力想定: [1, num_boxes, 6] -> [x1, y1, x2, y2, score, class_id]
+
+        const boxes: DetectionBox[] = [];
+
+        if (dims.length === 3 && dims[2] === 6) {
+          // NMS-free End-to-End 出力形式 [1, N, 6]
+          const numDetections = dims[1];
+          for (let i = 0; i < numDetections; i++) {
+            const offset = i * 6;
+            const score = data[offset + 4];
+            if (score >= CONFIDENCE_THRESHOLD) {
+              boxes.push({
+                x1: Math.max(0, data[offset] / YOLO_INPUT_SIZE),
+                y1: Math.max(0, data[offset + 1] / YOLO_INPUT_SIZE),
+                x2: Math.min(1, data[offset + 2] / YOLO_INPUT_SIZE),
+                y2: Math.min(1, data[offset + 3] / YOLO_INPUT_SIZE),
+                score,
+                label: 'tomato'
+              });
+            }
+          }
+        } else if (dims.length === 3) {
+          // 従来型出力 [1, 4 + num_classes, num_anchors] へのフォールバック対応
+          const numChannels = dims[1];
+          const numAnchors = dims[2];
+          for (let i = 0; i < numAnchors; i++) {
+            let maxScore = 0;
+            for (let c = 4; c < numChannels; c++) {
+              const s = data[c * numAnchors + i];
+              if (s > maxScore) maxScore = s;
+            }
+            if (maxScore >= CONFIDENCE_THRESHOLD) {
+              const cx = data[0 * numAnchors + i];
+              const cy = data[1 * numAnchors + i];
+              const w = data[2 * numAnchors + i];
+              const h = data[3 * numAnchors + i];
+              boxes.push({
+                x1: Math.max(0, (cx - w / 2) / YOLO_INPUT_SIZE),
+                y1: Math.max(0, (cy - h / 2) / YOLO_INPUT_SIZE),
+                x2: Math.min(1, (cx + w / 2) / YOLO_INPUT_SIZE),
+                y2: Math.min(1, (cy + h / 2) / YOLO_INPUT_SIZE),
+                score: maxScore,
+                label: 'tomato'
+              });
+            }
+          }
+        }
+
+        resolve(boxes);
+      } catch (err) {
+        console.error(`YOLO推論エラー (${imageUrl}):`, err);
+        resolve([]);
+      }
+    };
+    img.onerror = () => resolve([]);
+    img.src = imageUrl;
+  });
+}
+
+// --- 3. データ処理 (dx, dyから2D累積位置を計算) ---
 const processImagesForPanorama = (logs: LogEntry[], width: number) => {
   const result = [];
   let accumulatedX = 0;
@@ -43,17 +155,13 @@ const processImagesForPanorama = (logs: LogEntry[], width: number) => {
     const dxNum = typeof log.dx === 'string' ? parseFloat(log.dx) : (log.dx || 0);
     const dyNum = typeof log.dy === 'string' ? parseFloat(log.dy) : (log.dy || 0);
 
-    // 1番目の画像(i=0)は基準点(0,0)に配置
     if (i > 0) {
-      // 基準ピクセル移動量を3D空間スケールに変換
       const stepX = dxNum ? (dxNum / 100) : width;
       const stepY = dyNum ? (dyNum / 100) : 0;
-      
       accumulatedX -= stepX;
-      accumulatedY += stepY; // 3D空間のY軸正方向と合わせる
+      accumulatedY += stepY;
     }
 
-    // 可視化用の特徴点（ダミー表示用）
     const featurePoints: [number, number][] = [
       [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
       [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
@@ -71,29 +179,21 @@ const processImagesForPanorama = (logs: LogEntry[], width: number) => {
   return result;
 }; 
 
-// --- 3. 3D サブコンポーネント ---
+// --- 4. 3D サブコンポーネント ---
 
 const CameraRig = ({ targetX, targetY }: { targetX: number; targetY: number }) => {
   const { camera, controls } = useThree();
   
   useFrame((_, delta) => {
     const dampSpeed = 5 * delta;
-    const currentX = camera.position.x;
-    const currentY = camera.position.y;
-    
-    const nextX = THREE.MathUtils.lerp(currentX, targetX, dampSpeed);
-    const nextY = THREE.MathUtils.lerp(currentY, targetY, dampSpeed);
-    
+    const nextX = THREE.MathUtils.lerp(camera.position.x, targetX, dampSpeed);
+    const nextY = THREE.MathUtils.lerp(camera.position.y, targetY, dampSpeed);
     camera.position.set(nextX, nextY, camera.position.z);
 
     if (controls) {
       const orbit = controls as unknown as { target: THREE.Vector3; update: () => void };
-      const currentTargetX = orbit.target.x;
-      const currentTargetY = orbit.target.y;
-      
-      const nextTargetX = THREE.MathUtils.lerp(currentTargetX, targetX, dampSpeed);
-      const nextTargetY = THREE.MathUtils.lerp(currentTargetY, targetY, dampSpeed);
-      
+      const nextTargetX = THREE.MathUtils.lerp(orbit.target.x, targetX, dampSpeed);
+      const nextTargetY = THREE.MathUtils.lerp(orbit.target.y, targetY, dampSpeed);
       orbit.target.set(nextTargetX, nextTargetY, orbit.target.z);
       orbit.update();
     }
@@ -102,12 +202,68 @@ const CameraRig = ({ targetX, targetY }: { targetX: number; targetY: number }) =
   return null;
 };
 
-const ImagePanel = ({ url, position, index, mode = 'cylinder', curveFactor = CURVE_FACTOR }: { 
+// 検出されたトマトを赤枠で囲むコンポーネント
+const TomatoBoundingBoxes = ({ detections }: { detections: DetectionBox[] }) => {
+  if (!detections || detections.length === 0) return null;
+
+  return (
+    <group position={[0, 0, 0.02]}>
+      {detections.map((box, idx) => {
+        // 正規化座標(0~1, 左上原点) を Three.js のローカル座標(中央原点, Y上向き)に変換
+        const left = (box.x1 - 0.5) * IMAGE_WIDTH;
+        const right = (box.x2 - 0.5) * IMAGE_WIDTH;
+        const top = (0.5 - box.y1) * IMAGE_HEIGHT;
+        const bottom = (0.5 - box.y2) * IMAGE_HEIGHT;
+
+        const rectPoints: [number, number, number][] = [
+          [left, top, 0],
+          [right, top, 0],
+          [right, bottom, 0],
+          [left, bottom, 0],
+          [left, top, 0]
+        ];
+
+        return (
+          <group key={idx}>
+            <Line
+              points={rectPoints}
+              color="#ff1a1a"
+              lineWidth={2.5}
+            />
+            <Text
+              position={[left, top + 0.06, 0.01]}
+              fontSize={0.09}
+              color="#ff3333"
+              anchorX="left"
+              anchorY="bottom"
+              outlineWidth={0.01}
+              outlineColor="#000000"
+            >
+              {`${box.label} ${(box.score * 100).toFixed(0)}%`}
+            </Text>
+          </group>
+        );
+      })}
+    </group>
+  );
+};
+
+const ImagePanel = ({ 
+  url, 
+  position, 
+  index, 
+  mode = 'cylinder', 
+  curveFactor = CURVE_FACTOR,
+  detections = [],
+  showDetections = true
+}: { 
   url: string, 
   position: [number, number, number], 
   index: number,
   mode?: ViewMode,
-  curveFactor?: number
+  curveFactor?: number,
+  detections?: DetectionBox[],
+  showDetections?: boolean
 }) => {
   const groupRef = useRef<THREE.Group>(null!);
   const meshRef = useRef<THREE.Mesh>(null!);
@@ -126,7 +282,6 @@ const ImagePanel = ({ url, position, index, mode = 'cylinder', curveFactor = CUR
       dynamicZ = 0;
     }
     
-    // X, Y, Z の位置を設定
     groupRef.current.position.set(position[0], position[1], dynamicZ);
 
     const isFront = distanceX < (IMAGE_WIDTH * 0.5);
@@ -149,6 +304,8 @@ const ImagePanel = ({ url, position, index, mode = 'cylinder', curveFactor = CUR
         opacity={OPACITY_INVISIBLE}
         side={THREE.DoubleSide}
       />
+      {/* YOLO26n 検出結果の赤枠をパネルに追従させて描画 */}
+      {showDetections && <TomatoBoundingBoxes detections={detections} />}
     </group>
   );
 };
@@ -245,22 +402,71 @@ const controlPanelStyle: React.CSSProperties = {
   borderRadius: '12px',
   border: '1px solid #444',
   color: '#fff',
-  width: '220px',
+  width: '240px',
   fontFamily: 'sans-serif',
   fontSize: '12px'
 };
 
-// --- 4. 3D パノラマ表示コンポーネント ---
+// --- 5. 3D パノラマ表示コンポーネント ---
 function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
   const processedData = useMemo(() => processImagesForPanorama(rawLogs, IMAGE_WIDTH), [rawLogs]);
   const initialPos = processedData[0]?.position || [0, 0, 0];
 
-  const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>( [initialPos[0], initialPos[1]] );
+  const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
   const [viewMode, setViewMode] = useState<ViewMode>('cylinder');
   const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
   const [showMatches, setShowMatches] = useState(true);
+  const [showDetections, setShowDetections] = useState(true);
 
-  // データ更新時にカメラ位置をリセット
+  // YOLO26n 検出結果ステート (filename -> DetectionBox[])
+  const [detectionsMap, setDetectionsMap] = useState<Record<string, DetectionBox[]>>({});
+  const [yoloStatus, setYoloStatus] = useState<string>('YOLO26n モデル読込中...');
+
+  // YOLO26n モデルのロードと全画像に対する推論実行
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function detectAllImages() {
+      if (processedData.length === 0) return;
+
+      try {
+        setYoloStatus('YOLO26n 初期化中...');
+        const session = await ort.InferenceSession.create(YOLO_MODEL_URL, {
+          executionProviders: ['wasm']
+        });
+
+        let completed = 0;
+        for (const item of processedData) {
+          if (isCancelled) break;
+          setYoloStatus(`YOLO26n 検出中 (${completed + 1}/${processedData.length})`);
+          
+          const boxes = await runYolo26Detection(session, item.url);
+          if (!isCancelled) {
+            setDetectionsMap((prev) => ({
+              ...prev,
+              [item.filename]: boxes
+            }));
+          }
+          completed++;
+        }
+
+        if (!isCancelled) {
+          setYoloStatus(`YOLO26n 検出完了 (${completed}枚)`);
+        }
+      } catch (err) {
+        console.error('YOLO26n モデルのロードに失敗しました:', err);
+        if (!isCancelled) {
+          setYoloStatus('YOLO26n モデル読込エラー (/models/yolo26n.onnx を確認)');
+        }
+      }
+    }
+
+    detectAllImages();
+    return () => {
+      isCancelled = true;
+    };
+  }, [processedData]);
+
   useEffect(() => {
     if (processedData.length > 0) {
       setTargetCameraPos([processedData[0].position[0], processedData[0].position[1]]);
@@ -286,6 +492,8 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
     }
   };
 
+  const currentDetectionsCount = detectionsMap[processedData[currentImageIdx]?.filename]?.length || 0;
+
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
       <header style={{
@@ -303,7 +511,7 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
         fontFamily: 'sans-serif'
       }}>
         <p style={{ margin: 0, fontSize: '14px', fontWeight: 'bold' }}>
-          検証用ビルド日時: {BUILD_TIME}
+          検証用ビルド日時: {BUILD_TIME} ｜ {yoloStatus}
         </p>
       </header>
 
@@ -336,13 +544,22 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
           </div>
         )}
 
-        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
+        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', marginBottom: '8px' }}>
           <input 
             type="checkbox" 
             checked={showMatches} 
             onChange={(e) => setShowMatches(e.target.checked)} 
           />
           Show AKAZE Matches
+        </label>
+
+        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', color: '#ff6666', fontWeight: 'bold' }}>
+          <input 
+            type="checkbox" 
+            checked={showDetections} 
+            onChange={(e) => setShowDetections(e.target.checked)} 
+          />
+          Show Tomato Boxes (YOLO26n)
         </label>
       </div>
 
@@ -389,6 +606,8 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
               position={img.position}
               mode={viewMode}
               curveFactor={curveFactor}
+              detections={detectionsMap[img.filename]}
+              showDetections={showDetections}
             />
           ))}
 
@@ -401,7 +620,9 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
         <button style={arrowButtonStyle} onClick={moveLeft}>←</button>
         <div style={labelStyle}>
           Target X: {Math.round(targetCameraPos[0])} <br/>
-          <span style={{fontSize:'10px', color:'#888'}}>Step: {MOVE_STEP}px</span>
+          <span style={{fontSize:'11px', color:'#ff6666'}}>
+            検出トマト数: {currentDetectionsCount}個
+          </span>
         </div>
         <button style={arrowButtonStyle} onClick={moveRight}>→</button>
       </div>
@@ -409,13 +630,12 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
   );  
 }
 
-// --- 5. メインAppコンポーネント (images_a_50.csv 読み込み) ---
+// --- 6. メインAppコンポーネント (images_a_50.csv 読み込み) ---
 export default function App() {
   const [data, setData] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 読み込み対象を images_a_50.csv に指定
     Papa.parse('/images_a_50.csv', {
       download: true,
       header: true,

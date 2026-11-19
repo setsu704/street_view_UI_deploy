@@ -27,7 +27,8 @@ const CURVE_FACTOR = 0.000015;
 // YOLO26n モデル設定
 const YOLO_MODEL_URL = '/models/yolo26n.onnx';
 const YOLO_INPUT_SIZE = 640;
-const CONFIDENCE_THRESHOLD = 0.45; // 検出信頼度のしきい値
+const DEFAULT_CONFIDENCE_THRESHOLD = 0.25; // 緑トマトも拾えるようデフォルト値を0.25に引き下げ
+const NMS_IOU_THRESHOLD = 0.45;          // 重複枠の統合しきい値
 
 export type ViewMode = 'plane' | 'cylinder' | 'tunnel';
 
@@ -48,22 +49,67 @@ export interface DetectionBox {
 }
 
 // --- 2. YOLO26n (ONNX) 推論ユーティリティ ---
+
+// 重複するバウンディングボックスを除去するNMS（Non-Maximum Suppression）
+function applyNMS(boxes: DetectionBox[], iouThreshold: number): DetectionBox[] {
+  if (boxes.length === 0) return [];
+  const sorted = [...boxes].sort((a, b) => b.score - a.score);
+  const selected: DetectionBox[] = [];
+
+  while (sorted.length > 0) {
+    const current = sorted.shift()!;
+    selected.push(current);
+
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const other = sorted[i];
+      const interX1 = Math.max(current.x1, other.x1);
+      const interY1 = Math.max(current.y1, other.y1);
+      const interX2 = Math.min(current.x2, other.x2);
+      const interY2 = Math.min(current.y2, other.y2);
+
+      const interArea = Math.max(0, interX2 - interX1) * Math.max(0, interY2 - interY1);
+      const areaA = (current.x2 - current.x1) * (current.y2 - current.y1);
+      const areaB = (other.x2 - other.x1) * (other.y2 - other.y1);
+      const unionArea = areaA + areaB - interArea;
+
+      if (unionArea > 0 && interArea / unionArea > iouThreshold) {
+        sorted.splice(i, 1);
+      }
+    }
+  }
+  return selected;
+}
+
 async function runYolo26Detection(
   session: ort.InferenceSession,
   imageUrl: string
 ): Promise<DetectionBox[]> {
   return new Promise((resolve) => {
     const img = new window.Image();
-    img.crossOrigin = 'Anonymous';
     img.onload = async () => {
       try {
+        const origW = img.naturalWidth || img.width;
+        const origH = img.naturalHeight || img.height;
+        if (!origW || !origH) return resolve([]);
+
+        // アスペクト比を維持して640x640に収める（Letterbox処理）
+        const scale = Math.min(YOLO_INPUT_SIZE / origW, YOLO_INPUT_SIZE / origH);
+        const newW = Math.round(origW * scale);
+        const newH = Math.round(origH * scale);
+        const padX = Math.floor((YOLO_INPUT_SIZE - newW) / 2);
+        const padY = Math.floor((YOLO_INPUT_SIZE - newH) / 2);
+
         const canvas = document.createElement('canvas');
         canvas.width = YOLO_INPUT_SIZE;
         canvas.height = YOLO_INPUT_SIZE;
         const ctx = canvas.getContext('2d');
         if (!ctx) return resolve([]);
 
-        ctx.drawImage(img, 0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
+        // YOLO標準のグレー(114, 114, 114)で余白を塗りつぶし
+        ctx.fillStyle = 'rgb(114, 114, 114)';
+        ctx.fillRect(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
+        ctx.drawImage(img, padX, padY, newW, newH);
+
         const imageData = ctx.getImageData(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE).data;
 
         const float32Data = new Float32Array(3 * YOLO_INPUT_SIZE * YOLO_INPUT_SIZE);
@@ -83,25 +129,40 @@ async function runYolo26Detection(
         const data = output.data as Float32Array;
         const dims = output.dims;
 
-        const boxes: DetectionBox[] = [];
+        // スライダーで後から絞り込めるよう、最低ライン(0.15)以上をすべて保持しておく
+        const minStoreScore = 0.15;
+        const rawBoxes: DetectionBox[] = [];
+
+        // レターボックス座標を元画像の0.0〜1.0正規化座標へ戻すヘルパー
+        const toNormalizedBox = (bx1: number, by1: number, bx2: number, by2: number, score: number): DetectionBox => {
+          const origX1 = (bx1 - padX) / newW;
+          const origY1 = (by1 - padY) / newH;
+          const origX2 = (bx2 - padX) / newW;
+          const origY2 = (by2 - padY) / newH;
+          return {
+            x1: Math.max(0, Math.min(1, origX1)),
+            y1: Math.max(0, Math.min(1, origY1)),
+            x2: Math.max(0, Math.min(1, origX2)),
+            y2: Math.max(0, Math.min(1, origY2)),
+            score,
+            label: 'tomato'
+          };
+        };
 
         if (dims.length === 3 && dims[2] === 6) {
+          // End-to-End 出力形式: [1, num_detections, 6] (x1, y1, x2, y2, score, class_id)
           const numDetections = dims[1];
           for (let i = 0; i < numDetections; i++) {
             const offset = i * 6;
             const score = data[offset + 4];
-            if (score >= CONFIDENCE_THRESHOLD) {
-              boxes.push({
-                x1: Math.max(0, data[offset] / YOLO_INPUT_SIZE),
-                y1: Math.max(0, data[offset + 1] / YOLO_INPUT_SIZE),
-                x2: Math.min(1, data[offset + 2] / YOLO_INPUT_SIZE),
-                y2: Math.min(1, data[offset + 3] / YOLO_INPUT_SIZE),
-                score,
-                label: 'tomato'
-              });
+            if (score >= minStoreScore) {
+              rawBoxes.push(
+                toNormalizedBox(data[offset], data[offset + 1], data[offset + 2], data[offset + 3], score)
+              );
             }
           }
         } else if (dims.length === 3) {
+          // 標準 YOLO 出力形式: [1, 4 + num_classes, num_anchors]
           const numChannels = dims[1];
           const numAnchors = dims[2];
           for (let i = 0; i < numAnchors; i++) {
@@ -110,30 +171,28 @@ async function runYolo26Detection(
               const s = data[c * numAnchors + i];
               if (s > maxScore) maxScore = s;
             }
-            if (maxScore >= CONFIDENCE_THRESHOLD) {
+            if (maxScore >= minStoreScore) {
               const cx = data[0 * numAnchors + i];
               const cy = data[1 * numAnchors + i];
               const w = data[2 * numAnchors + i];
               const h = data[3 * numAnchors + i];
-              boxes.push({
-                x1: Math.max(0, (cx - w / 2) / YOLO_INPUT_SIZE),
-                y1: Math.max(0, (cy - h / 2) / YOLO_INPUT_SIZE),
-                x2: Math.min(1, (cx + w / 2) / YOLO_INPUT_SIZE),
-                y2: Math.min(1, (cy + h / 2) / YOLO_INPUT_SIZE),
-                score: maxScore,
-                label: 'tomato'
-              });
+              rawBoxes.push(
+                toNormalizedBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, maxScore)
+              );
             }
           }
         }
 
-        resolve(boxes);
+        resolve(applyNMS(rawBoxes, NMS_IOU_THRESHOLD));
       } catch (err) {
         console.error(`YOLO推論エラー (${imageUrl}):`, err);
         resolve([]);
       }
     };
-    img.onerror = () => resolve([]);
+    img.onerror = (e) => {
+      console.error(`YOLO用画像の読み込みに失敗 (${imageUrl}):`, e);
+      resolve([]);
+    };
     img.src = imageUrl;
   });
 }
@@ -146,6 +205,8 @@ const processImagesForPanorama = (logs: LogEntry[], width: number) => {
 
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];
+    if (!log.filename) continue;
+
     const dxNum = typeof log.dx === 'string' ? parseFloat(log.dx) : (log.dx || 0);
     const dyNum = typeof log.dy === 'string' ? parseFloat(log.dy) : (log.dy || 0);
 
@@ -156,18 +217,11 @@ const processImagesForPanorama = (logs: LogEntry[], width: number) => {
       accumulatedY += stepY;
     }
 
-    const featurePoints: [number, number][] = [
-      [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
-      [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8],
-      [(Math.random() - 0.5) * width * 0.8, (Math.random() - 0.5) * IMAGE_HEIGHT * 0.8]
-    ];
-
     result.push({
       id: i,
-      url: `/images/left/${log.filename}`,
+      url: `/images/left/${log.filename.trim()}`,
       position: [accumulatedX, accumulatedY, 0] as [number, number, number],
-      filename: log.filename,
-      featurePoints
+      filename: log.filename.trim()
     });
   }
   return result;
@@ -306,50 +360,6 @@ const ImagePanel = ({
   );
 };
 
-const FeatureMatchLines = ({ items }: { items: ReturnType<typeof processImagesForPanorama> }) => {
-  const lines = useMemo(() => {
-    const result: { id: string; points: THREE.Vector3[] }[] = [];
-
-    for (let i = 0; i < items.length - 1; i++) {
-      const imgA = items[i];
-      const imgB = items[i + 1];
-
-      imgA.featurePoints.forEach((ptA, ptIdx) => {
-        const ptB = imgB.featurePoints[ptIdx] || imgB.featurePoints[0];
-
-        const start = new THREE.Vector3(imgA.position[0] + ptA[0], imgA.position[1] + ptA[1], 0.1);
-        const end = new THREE.Vector3(imgB.position[0] + ptB[0], imgB.position[1] + ptB[1], 0.1);
-
-        const midX = (start.x + end.x) / 2;
-        const midY = (start.y + end.y) / 2;
-        const midZ = 0.8;
-
-        const curve = new THREE.QuadraticBezierCurve3(start, new THREE.Vector3(midX, midY, midZ), end);
-        result.push({
-          id: `${i}-${ptIdx}`,
-          points: curve.getPoints(20)
-        });
-      });
-    }
-    return result;
-  }, [items]);
-
-  return (
-    <group>
-      {lines.map((line) => (
-        <Line
-          key={line.id}
-          points={line.points}
-          color="#00ffcc"
-          lineWidth={1.5}
-          transparent
-          opacity={0.6}
-        />
-      ))}
-    </group>
-  );
-};
-
 // --- CSS Styles ---
 const uiContainerStyle: React.CSSProperties = {
   position: 'absolute',
@@ -385,7 +395,7 @@ const labelStyle: React.CSSProperties = {
   color: '#fff',
   fontFamily: 'monospace',
   textAlign: 'center',
-  minWidth: '120px'
+  minWidth: '140px'
 };
 
 const controlPanelStyle: React.CSSProperties = {
@@ -411,8 +421,8 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
   const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
   const [viewMode, setViewMode] = useState<ViewMode>('cylinder');
   const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
-  const showMatches = true;
   const [showDetections, setShowDetections] = useState(true);
+  const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
 
   const [detectionsMap, setDetectionsMap] = useState<Record<string, DetectionBox[]>>({});
   const [yoloStatus, setYoloStatus] = useState<string>('YOLO26n モデル読込中...');
@@ -430,11 +440,15 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
         });
 
         let completed = 0;
+        let detectedImagesCount = 0;
+
         for (const item of processedData) {
           if (isCancelled) break;
           setYoloStatus(`YOLO26n 検出中 (${completed + 1}/${processedData.length})`);
           
           const boxes = await runYolo26Detection(session, item.url);
+          if (boxes.length > 0) detectedImagesCount++;
+
           if (!isCancelled) {
             setDetectionsMap((prev) => ({
               ...prev,
@@ -445,7 +459,7 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
         }
 
         if (!isCancelled) {
-          setYoloStatus(`YOLO26n 検出完了 (${completed}枚)`);
+          setYoloStatus(`YOLO26n 検出完了 (${detectedImagesCount}/${completed}枚で反応)`);
         }
       } catch (err) {
         console.error('YOLO26n モデルのロードに失敗しました:', err);
@@ -486,7 +500,16 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
     }
   };
 
-  const currentDetectionsCount = detectionsMap[processedData[currentImageIdx]?.filename]?.length || 0;
+  // 設定された信頼度しきい値以上のボックスだけを抽出
+  const filteredDetectionsMap = useMemo(() => {
+    const result: Record<string, DetectionBox[]> = {};
+    for (const [filename, boxes] of Object.entries(detectionsMap)) {
+      result[filename] = boxes.filter(b => b.score >= confThreshold);
+    }
+    return result;
+  }, [detectionsMap, confThreshold]);
+
+  const currentDetectionsCount = filteredDetectionsMap[processedData[currentImageIdx]?.filename]?.length || 0;
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
@@ -538,7 +561,7 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
           </div>
         )}
 
-        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', color: '#ff6666', fontWeight: 'bold' }}>
+        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', color: '#ff6666', fontWeight: 'bold', marginBottom: '10px' }}>
           <input 
             type="checkbox" 
             checked={showDetections} 
@@ -546,6 +569,23 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
           />
           Show Tomato Boxes (YOLO26n)
         </label>
+
+        {showDetections && (
+          <div>
+            <label style={{ display: 'block', marginBottom: '4px', color: '#ccc' }}>
+              Confidence Threshold: {Math.round(confThreshold * 100)}%
+            </label>
+            <input 
+              type="range" 
+              min="0.15" 
+              max="0.80" 
+              step="0.05" 
+              value={confThreshold}
+              onChange={(e) => setConfThreshold(parseFloat(e.target.value))}
+              style={{ width: '100%' }}
+            />
+          </div>
+        )}
       </div>
 
       <Canvas>
@@ -591,12 +631,10 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
               position={img.position}
               mode={viewMode}
               curveFactor={curveFactor}
-              detections={detectionsMap[img.filename]}
+              detections={filteredDetectionsMap[img.filename]}
               showDetections={showDetections}
             />
           ))}
-
-          {showMatches && <FeatureMatchLines items={processedData} />}
         </Suspense>
 
       </Canvas>
@@ -604,7 +642,7 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
       <div style={uiContainerStyle}>
         <button style={arrowButtonStyle} onClick={moveLeft}>←</button>
         <div style={labelStyle}>
-          Target X: {Math.round(targetCameraPos[0])} <br/>
+          Image: {currentImageIdx + 1} / {processedData.length} <br/>
           <span style={{fontSize:'11px', color:'#ff6666'}}>
             検出トマト数: {currentDetectionsCount}個
           </span>
@@ -621,7 +659,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Papa.parse<LogEntry>('/images_a_0_0.csv', {
+    Papa.parse<LogEntry>('/images_a_50.csv', {
       download: true,
       header: true,
       skipEmptyLines: true,

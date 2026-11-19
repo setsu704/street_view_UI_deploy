@@ -621,7 +621,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Papa.parse<LogEntry>('/images_a_100.csv', {
+    Papa.parse<LogEntry>('/images_a_0_0.csv', {
       download: true,
       header: true,
       skipEmptyLines: true,

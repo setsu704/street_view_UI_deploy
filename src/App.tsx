@@ -539,15 +539,6 @@ function PanoramaView({ rawLogs }: { rawLogs: LogEntry[] }) {
           </div>
         )}
 
-        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', marginBottom: '8px' }}>
-          <input 
-            type="checkbox" 
-            checked={showMatches} 
-            onChange={(e) => setShowMatches(e.target.checked)} 
-          />
-          Show AKAZE Matches
-        </label>
-
         <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', color: '#ff6666', fontWeight: 'bold' }}>
           <input 
             type="checkbox" 

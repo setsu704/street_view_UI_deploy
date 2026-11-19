@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Papa, { type ParseResult } from 'papaparse';
 import type { ImageItem, LogEntry } from './types/panorama';
 import { useYoloDetector } from './hooks/useYoloDetector';

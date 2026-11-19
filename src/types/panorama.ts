@@ -23,9 +23,12 @@ export interface DetectionBox {
 }
 
 export interface DetectionsJson {
+  status?: 'running' | 'completed';
   generatedAt: string;
   totalImages: number;
+  processedImages: number;
   detectedImagesCount: number;
   totalBoxesCount: number;
+  logs: string[];
   detections: Record<string, DetectionBox[]>;
 }

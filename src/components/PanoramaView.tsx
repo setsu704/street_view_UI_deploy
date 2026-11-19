@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import type { DetectionBox, ImageItem, ViewMode } from '../types/panorama';
+import type { DetectionBox, DetectionsJson, ImageItem, ViewMode } from '../types/panorama';
 
 const BUILD_TIME = new Date().toLocaleString('ja-JP', {
   timeZone: 'Asia/Tokyo',
@@ -177,7 +177,6 @@ const arrowButtonStyle: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'center',
   alignItems: 'center',
-  transition: 'background 0.2s',
 };
 
 const labelStyle: React.CSSProperties = {
@@ -189,10 +188,10 @@ const labelStyle: React.CSSProperties = {
 
 const controlPanelStyle: React.CSSProperties = {
   position: 'absolute',
-  top: '50px',
+  top: '55px',
   right: '20px',
   zIndex: 100,
-  background: 'rgba(0, 0, 0, 0.75)',
+  background: 'rgba(0, 0, 0, 0.8)',
   padding: '16px',
   borderRadius: '12px',
   border: '1px solid #444',
@@ -202,13 +201,28 @@ const controlPanelStyle: React.CSSProperties = {
   fontSize: '12px',
 };
 
+const progressPanelStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '55px',
+  left: '20px',
+  zIndex: 100,
+  background: 'rgba(0, 0, 0, 0.82)',
+  padding: '14px',
+  borderRadius: '12px',
+  border: '1px solid #319795',
+  color: '#e2e8f0',
+  width: '340px',
+  fontFamily: 'monospace',
+  fontSize: '11px',
+};
+
 interface PanoramaViewProps {
   images: ImageItem[];
-  detectionsMap: Record<string, DetectionBox[]>;
-  statusText: string;
+  detectionData: DetectionsJson | null;
+  errorText: string;
 }
 
-export function PanoramaView({ images, detectionsMap, statusText }: PanoramaViewProps) {
+export function PanoramaView({ images, detectionData, errorText }: PanoramaViewProps) {
   const initialPos = images[0]?.position || [0, 0, 0];
 
   const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
@@ -216,6 +230,16 @@ export function PanoramaView({ images, detectionsMap, statusText }: PanoramaView
   const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
   const [showDetections, setShowDetections] = useState(true);
   const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
+  const [showLogs, setShowLogs] = useState(true);
+
+  const logContainerRef = useRef<HTMLDivElement>(null);
+
+  // ログが更新されたら自動スクロール
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [detectionData?.logs]);
 
   useEffect(() => {
     if (images.length > 0) {
@@ -242,16 +266,29 @@ export function PanoramaView({ images, detectionsMap, statusText }: PanoramaView
     }
   };
 
-  // 設定された信頼度しきい値以上のボックスだけを抽出
   const filteredDetectionsMap = useMemo(() => {
     const result: Record<string, DetectionBox[]> = {};
-    for (const [filename, boxes] of Object.entries(detectionsMap)) {
+    const detections = detectionData?.detections || {};
+    for (const [filename, boxes] of Object.entries(detections)) {
       result[filename] = boxes.filter((b) => b.score >= confThreshold);
     }
     return result;
-  }, [detectionsMap, confThreshold]);
+  }, [detectionData, confThreshold]);
 
   const currentDetectionsCount = filteredDetectionsMap[images[currentImageIdx]?.filename]?.length || 0;
+
+  const totalImages = detectionData?.totalImages || images.length || 0;
+  const processedImages = detectionData?.processedImages ?? totalImages;
+  const progressPercent = totalImages > 0 ? Math.round((processedImages / totalImages) * 100) : 0;
+  const isRunning = detectionData?.status === 'running';
+
+  const headerStatus = errorText
+    ? errorText
+    : isRunning
+    ? `YOLO26n 検出実行中... (${processedImages}/${totalImages}枚)`
+    : detectionData
+    ? `事前検出データ読込済 (${detectionData.detectedImagesCount}/${totalImages}枚で反応 / 計${detectionData.totalBoxesCount}個)`
+    : '検出データ待機中...';
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
@@ -273,9 +310,77 @@ export function PanoramaView({ images, detectionsMap, statusText }: PanoramaView
         }}
       >
         <p style={{ margin: 0, fontSize: '14px', fontWeight: 'bold' }}>
-          検証用ビルド日時: {BUILD_TIME} ｜ {statusText}
+          検証用ビルド日時: {BUILD_TIME} ｜ {headerStatus}
         </p>
       </header>
+
+      {/* 左上: YOLO検出の途中経過＆結果ログパネル */}
+      <div style={progressPanelStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <span style={{ fontWeight: 'bold', color: isRunning ? '#f6e05e' : '#4fd1c5', fontSize: '12px' }}>
+            {isRunning ? `● 検出処理中 (${progressPercent}%)` : `✓ 検出ログ (${progressPercent}%)`}
+          </span>
+          <button
+            onClick={() => setShowLogs(!showLogs)}
+            style={{
+              background: '#2d3748',
+              color: '#fff',
+              border: '1px solid #4a5568',
+              borderRadius: '4px',
+              padding: '2px 6px',
+              cursor: 'pointer',
+              fontSize: '10px',
+            }}
+          >
+            {showLogs ? 'ログを隠す' : 'ログを表示'}
+          </button>
+        </div>
+
+        {/* プログレスバー */}
+        <div style={{ width: '100%', height: '6px', background: '#2d3748', borderRadius: '3px', overflow: 'hidden', marginBottom: '8px' }}>
+          <div
+            style={{
+              width: `${progressPercent}%`,
+              height: '100%',
+              background: errorText ? '#f56565' : isRunning ? '#ecc94b' : '#38b2ac',
+              transition: 'width 0.3s ease',
+            }}
+          />
+        </div>
+
+        {detectionData && (
+          <div style={{ marginBottom: '6px', color: '#cbd5e0' }}>
+            進捗: {processedImages} / {totalImages} 枚 ｜ 反応画像: {detectionData.detectedImagesCount} 枚 (計 {detectionData.totalBoxesCount} 個)
+          </div>
+        )}
+
+        {showLogs && (
+          <div
+            ref={logContainerRef}
+            style={{
+              maxHeight: '160px',
+              overflowY: 'auto',
+              background: 'rgba(0, 0, 0, 0.65)',
+              padding: '6px',
+              borderRadius: '6px',
+              border: '1px solid #2d3748',
+              lineHeight: '1.4',
+            }}
+          >
+            {detectionData?.logs && detectionData.logs.length > 0 ? (
+              detectionData.logs.map((log, i) => (
+                <div key={i} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {log}
+                </div>
+              ))
+            ) : (
+              <div style={{ color: '#a0aec0' }}>
+                {errorText || 'ログデータがありません'}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* 右上: 3D表示コントロール */}
       <div style={controlPanelStyle}>

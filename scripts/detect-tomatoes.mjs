@@ -11,7 +11,7 @@ const MODEL_PATH = path.resolve('public/models/yolo26n.onnx');
 const OUTPUT_JSON_PATH = path.resolve('public/detections.json');
 
 const YOLO_INPUT_SIZE = 640;
-const MIN_STORE_SCORE = 0.15; // スライダー絞り込み用に0.15以上を保存
+const MIN_STORE_SCORE = 0.15;
 const NMS_IOU_THRESHOLD = 0.45;
 
 // NMS（重複枠の統合）
@@ -53,14 +53,12 @@ async function detectImage(session, imagePath) {
 
   if (!origW || !origH) return [];
 
-  // Letterboxリサイズ計算
   const scale = Math.min(YOLO_INPUT_SIZE / origW, YOLO_INPUT_SIZE / origH);
   const newW = Math.round(origW * scale);
   const newH = Math.round(origH * scale);
   const padX = Math.floor((YOLO_INPUT_SIZE - newW) / 2);
   const padY = Math.floor((YOLO_INPUT_SIZE - newH) / 2);
 
-  // 640x640 RGBバッファ生成（余白はYOLO標準の114）
   const { data: rawBuffer } = await image
     .resize(newW, newH)
     .extend({
@@ -74,7 +72,6 @@ async function detectImage(session, imagePath) {
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // HWC -> CHW & 0.0-1.0正規化
   const stride = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
   const float32Data = new Float32Array(3 * stride);
   for (let i = 0; i < stride; i++) {
@@ -134,61 +131,98 @@ async function detectImage(session, imagePath) {
   return applyNMS(rawBoxes, NMS_IOU_THRESHOLD);
 }
 
+// 途中経過をJSONファイルへ逐次書き出しする関数
+function saveProgressJson(payload) {
+  const tempPath = `${OUTPUT_JSON_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), 'utf-8');
+  fs.renameSync(tempPath, OUTPUT_JSON_PATH); // 読み込み中のファイル破損を防ぐためアトミックに置換
+}
+
 // メイン処理
 async function main() {
-  console.log('1. CSVファイルを読み込み中...');
+  const logs = [];
+  const addLog = (msg) => {
+    const time = new Date().toLocaleTimeString('ja-JP');
+    const line = `[${time}] ${msg}`;
+    console.log(line);
+    logs.push(line);
+    if (logs.length > 50) logs.shift(); // サイト表示用に最新50件を保持
+  };
+
+  addLog('CSVファイルを読み込み中...');
   const csvText = fs.readFileSync(CSV_PATH, 'utf-8');
   const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-  const filenames = parsed.data
-    .map((row) => row.filename?.trim())
-    .filter(Boolean);
+  const filenames = parsed.data.map((row) => row.filename?.trim()).filter(Boolean);
 
-  console.log(`対象画像数: ${filenames.length} 枚`);
-  console.log('2. YOLO26n モデルをロード中...');
-  const session = await ort.InferenceSession.create(MODEL_PATH);
+  addLog(`対象画像数: ${filenames.length} 枚。YOLO26n モデルをロード中...`);
 
   const detectionsMap = {};
   let detectedImagesCount = 0;
   let totalBoxesCount = 0;
 
-  console.log('3. 検出処理を開始します...');
+  // 開始状態をJSONに書き出し
+  saveProgressJson({
+    status: 'running',
+    generatedAt: new Date().toISOString(),
+    totalImages: filenames.length,
+    processedImages: 0,
+    detectedImagesCount: 0,
+    totalBoxesCount: 0,
+    logs: [...logs],
+    detections: detectionsMap,
+  });
+
+  const session = await ort.InferenceSession.create(MODEL_PATH);
+  addLog('モデルロード完了。推論を開始します...');
+
   for (let i = 0; i < filenames.length; i++) {
     const filename = filenames[i];
     const imagePath = path.join(IMAGES_DIR, filename);
 
     if (!fs.existsSync(imagePath)) {
-      console.warn(`[${i + 1}/${filenames.length}] スキップ (ファイルなし): ${filename}`);
+      addLog(`[${i + 1}/${filenames.length}] スキップ (ファイルなし): ${filename}`);
       detectionsMap[filename] = [];
-      continue;
+    } else {
+      const start = performance.now();
+      const boxes = await detectImage(session, imagePath);
+      const elapsed = Math.round(performance.now() - start);
+
+      detectionsMap[filename] = boxes;
+      if (boxes.length > 0) detectedImagesCount++;
+      totalBoxesCount += boxes.length;
+
+      addLog(`[${i + 1}/${filenames.length}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)`);
     }
 
-    const start = performance.now();
-    const boxes = await detectImage(session, imagePath);
-    const elapsed = Math.round(performance.now() - start);
-
-    detectionsMap[filename] = boxes;
-    if (boxes.length > 0) detectedImagesCount++;
-    totalBoxesCount += boxes.length;
-
-    // 途中経過の出力
-    console.log(
-      `[${i + 1}/${filenames.length}] ${filename} -> ${boxes.length}個検出 (${elapsed}ms)`
-    );
+    // 1枚終わるごとに途中経過を保存（サイト側がこれをリアルタイムに読み取る）
+    saveProgressJson({
+      status: 'running',
+      generatedAt: new Date().toISOString(),
+      totalImages: filenames.length,
+      processedImages: i + 1,
+      detectedImagesCount,
+      totalBoxesCount,
+      logs: [...logs],
+      detections: detectionsMap,
+    });
   }
 
-  // JSON保存
-  const outputPayload = {
+  addLog(`全処理完了! ${detectedImagesCount}/${filenames.length} 枚で検出（合計 ${totalBoxesCount} 個）`);
+
+  // 最終完了状態を保存
+  saveProgressJson({
+    status: 'completed',
     generatedAt: new Date().toISOString(),
     totalImages: filenames.length,
+    processedImages: filenames.length,
     detectedImagesCount,
     totalBoxesCount,
+    logs: [...logs],
     detections: detectionsMap,
-  };
+  });
 
-  fs.writeFileSync(OUTPUT_JSON_PATH, JSON.stringify(outputPayload, null, 2), 'utf-8');
   console.log('--------------------------------------------------');
-  console.log(`完了! 保存先: ${OUTPUT_JSON_PATH}`);
-  console.log(`結果: ${detectedImagesCount}/${filenames.length} 枚で検出（合計 ${totalBoxesCount} 個）`);
+  console.log(`保存完了: ${OUTPUT_JSON_PATH}`);
 }
 
 main().catch(console.error);

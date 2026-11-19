@@ -22,14 +22,10 @@ export interface DetectionBox {
   label: string;
 }
 
-// 途中経過を出力・表示するための進捗データ型
-export interface YoloProgress {
-  status: 'idle' | 'loading_model' | 'detecting' | 'completed' | 'error';
-  message: string;
-  current: number;
-  total: number;
-  currentFilename: string;
+export interface DetectionsJson {
+  generatedAt: string;
+  totalImages: number;
   detectedImagesCount: number;
   totalBoxesCount: number;
-  logs: string[]; // 途中経過のログ履歴
+  detections: Record<string, DetectionBox[]>;
 }

@@ -1,10 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import Papa, { type ParseResult } from 'papaparse';
-import type { ImageItem, LogEntry } from './types/panorama';
-import { useYoloDetector } from './hooks/useYoloDetector';
+import type { DetectionBox, DetectionsJson, ImageItem, LogEntry } from './types/panorama';
 import { PanoramaView, IMAGE_WIDTH } from './components/PanoramaView';
 
-// dx, dyから3D空間上の2D累積位置を計算
 const processImagesForPanorama = (logs: LogEntry[], width: number): ImageItem[] => {
   const result: ImageItem[] = [];
   let accumulatedX = 0;
@@ -36,40 +34,60 @@ const processImagesForPanorama = (logs: LogEntry[], width: number): ImageItem[] 
 
 export default function App() {
   const [rawLogs, setRawLogs] = useState<LogEntry[]>([]);
+  const [detectionsMap, setDetectionsMap] = useState<Record<string, DetectionBox[]>>({});
+  const [detectionStatus, setDetectionStatus] = useState<string>('検出データ読込中...');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Papa.parse<LogEntry>('/images_a_0_0.csv', {
-      download: true,
-      header: true,
-      skipEmptyLines: true,
-      complete: (results: ParseResult<LogEntry>) => {
-        setRawLogs(results.data);
-        setLoading(false);
-      },
-      error: (error: Error) => {
-        console.error('CSV読み込みエラー:', error);
-        setLoading(false);
-      },
+    // 1. CSVの読み込み
+    const loadCsv = new Promise<LogEntry[]>((resolve) => {
+      Papa.parse<LogEntry>('/images_a_0_0.csv', {
+        download: true,
+        header: true,
+        skipEmptyLines: true,
+        complete: (results: ParseResult<LogEntry>) => resolve(results.data),
+        error: () => resolve([]),
+      });
+    });
+
+    // 2. 事前検出済みJSONの読み込み
+    const loadDetections = fetch('/detections.json')
+      .then((res) => {
+        if (!res.ok) throw new Error('detections.json が見つかりません');
+        return res.json() as Promise<DetectionsJson>;
+      })
+      .then((json) => {
+        setDetectionsMap(json.detections || {});
+        setDetectionStatus(
+          `事前検出データ読込済 (${json.detectedImagesCount}/${json.totalImages}枚で反応)`
+        );
+      })
+      .catch((err) => {
+        console.warn('検出データの読み込みに失敗:', err);
+        setDetectionStatus('事前検出データなし (npm run detect を実行してください)');
+      });
+
+    Promise.all([loadCsv, loadDetections]).then(([csvData]) => {
+      setRawLogs(csvData);
+      setLoading(false);
     });
   }, []);
 
-  // 1. 座標データの生成
   const images = useMemo(() => processImagesForPanorama(rawLogs, IMAGE_WIDTH), [rawLogs]);
 
-  // 2. YOLO検出プログラムの実行（途中経過と結果をリアルタイム取得）
-  const { detectionsMap, progress } = useYoloDetector(images);
-
   if (loading) {
-    return <div style={{ color: '#fff', background: '#000', height: '100vh', padding: '20px' }}>CSVデータを読み込み中...</div>;
+    return (
+      <div style={{ color: '#fff', background: '#000', height: '100vh', padding: '20px' }}>
+        データを読み込み中...
+      </div>
+    );
   }
 
-  // 3. 3D空間配置プログラムへデータを渡して描画
   return (
     <PanoramaView
       images={images}
       detectionsMap={detectionsMap}
-      yoloProgress={progress}
+      statusText={detectionStatus}
     />
   );
 }

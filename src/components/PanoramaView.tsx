@@ -352,18 +352,20 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     return idx === -1 ? 0 : idx;
   }, [images, targetCameraPos]);
 
+  // 左矢印（←）：画面左側の画像へ移動（X座標がマイナス方向のためインデックスを増やす）
   const moveLeft = () => {
-    if (currentImageIdx > 0) {
-      const prev = images[currentImageIdx - 1];
-      setTargetCameraPos([prev.position[0], prev.position[1]]);
+    if (currentImageIdx < images.length - 1) {
+      const next = images[currentImageIdx + 1];
+      setTargetCameraPos([next.position[0], next.position[1]]);
       setNavTrigger((n) => n + 1);
     }
   };
 
+  // 右矢印（→）：画面右側の画像へ移動（X座標がプラス方向のためインデックスを減らす）
   const moveRight = () => {
-    if (currentImageIdx < images.length - 1) {
-      const next = images[currentImageIdx + 1];
-      setTargetCameraPos([next.position[0], next.position[1]]);
+    if (currentImageIdx > 0) {
+      const prev = images[currentImageIdx - 1];
+      setTargetCameraPos([prev.position[0], prev.position[1]]);
       setNavTrigger((n) => n + 1);
     }
   };

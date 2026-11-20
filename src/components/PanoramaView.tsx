@@ -23,31 +23,81 @@ const OPACITY_INVISIBLE = 0.5;
 const CURVE_FACTOR = 0.000015;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.25;
 
-// カメラのスムーズな追従制御
+// カメラのスムーズな追従制御（ユーザー操作時は妨げない）
 const CameraRig = ({
   targetX,
   targetY,
   targetZ,
+  navTrigger,
 }: {
   targetX: number;
   targetY: number;
   targetZ: number;
+  navTrigger: number;
 }) => {
   const { camera, controls } = useThree();
+  const isTransitioning = useRef(false);
+  const lastTrigger = useRef(navTrigger);
+
+  // 矢印移動や比較モード切替が発生したときだけ自動移動をONにする
+  useEffect(() => {
+    if (navTrigger !== lastTrigger.current) {
+      lastTrigger.current = navTrigger;
+      isTransitioning.current = true;
+    }
+  }, [navTrigger]);
+
+  // ユーザーがマウスホイールやドラッグ操作を始めたら自動移動を即座に解除
+  useEffect(() => {
+    const orbit = controls as unknown as {
+      addEventListener?: (event: string, listener: () => void) => void;
+      removeEventListener?: (event: string, listener: () => void) => void;
+    } | null;
+
+    if (!orbit || !orbit.addEventListener || !orbit.removeEventListener) return;
+
+    const handleUserInteract = () => {
+      isTransitioning.current = false;
+    };
+
+    orbit.addEventListener('start', handleUserInteract);
+    return () => {
+      orbit.removeEventListener?.('start', handleUserInteract);
+    };
+  }, [controls]);
 
   useFrame((_, delta) => {
-    const dampSpeed = 5 * delta;
+    if (!isTransitioning.current) return;
+
+    const dampSpeed = Math.min(1, 6 * delta);
+    const orbit = controls as unknown as { target: THREE.Vector3; update: () => void } | null;
+
     const nextX = THREE.MathUtils.lerp(camera.position.x, targetX, dampSpeed);
     const nextY = THREE.MathUtils.lerp(camera.position.y, targetY, dampSpeed);
     const nextZ = THREE.MathUtils.lerp(camera.position.z, targetZ, dampSpeed);
     camera.position.set(nextX, nextY, nextZ);
 
-    if (controls) {
-      const orbit = controls as unknown as { target: THREE.Vector3; update: () => void };
+    if (orbit) {
       const nextTargetX = THREE.MathUtils.lerp(orbit.target.x, targetX, dampSpeed);
       const nextTargetY = THREE.MathUtils.lerp(orbit.target.y, targetY, dampSpeed);
-      orbit.target.set(nextTargetX, nextTargetY, orbit.target.z);
+      const nextTargetZ = THREE.MathUtils.lerp(orbit.target.z, 0, dampSpeed);
+      orbit.target.set(nextTargetX, nextTargetY, nextTargetZ);
       orbit.update();
+    }
+
+    // 目標位置に十分近づいたら自動追従を終了し、自由操作状態にする
+    const dist =
+      Math.abs(camera.position.x - targetX) +
+      Math.abs(camera.position.y - targetY) +
+      Math.abs(camera.position.z - targetZ);
+
+    if (dist < 0.01) {
+      camera.position.set(targetX, targetY, targetZ);
+      if (orbit) {
+        orbit.target.set(targetX, targetY, 0);
+        orbit.update();
+      }
+      isTransitioning.current = false;
     }
   });
 
@@ -262,6 +312,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
   const initialPos = images[0]?.position || [0, 0, 0];
 
   const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
+  const [navTrigger, setNavTrigger] = useState(0);
   const [showDetections, setShowDetections] = useState(true);
   const [showOriginalBelow, setShowOriginalBelow] = useState(false);
   const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
@@ -278,6 +329,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
   useEffect(() => {
     if (images.length > 0) {
       setTargetCameraPos([images[0].position[0], images[0].position[1]]);
+      setNavTrigger((prev) => prev + 1);
     }
   }, [images]);
 
@@ -290,6 +342,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     if (currentImageIdx > 0) {
       const prev = images[currentImageIdx - 1];
       setTargetCameraPos([prev.position[0], prev.position[1]]);
+      setNavTrigger((n) => n + 1);
     }
   };
 
@@ -297,7 +350,13 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     if (currentImageIdx < images.length - 1) {
       const next = images[currentImageIdx + 1];
       setTargetCameraPos([next.position[0], next.position[1]]);
+      setNavTrigger((n) => n + 1);
     }
+  };
+
+  const handleToggleOriginalBelow = (checked: boolean) => {
+    setShowOriginalBelow(checked);
+    setNavTrigger((n) => n + 1);
   };
 
   const filteredDetectionsMap = useMemo(() => {
@@ -440,7 +499,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
           <input
             type="checkbox"
             checked={showOriginalBelow}
-            onChange={(e) => setShowOriginalBelow(e.target.checked)}
+            onChange={(e) => handleToggleOriginalBelow(e.target.checked)}
           />
           下に元画像を並べて比較
         </label>
@@ -496,13 +555,18 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
           enableDamping
           dampingFactor={0.1}
           target={[initialPos[0], initialPos[1] + verticalCenterOffset, 0]}
-          enablePan={false}
+          enableZoom={true}
+          enableRotate={true}
+          enablePan={true}
+          minDistance={0.5}
+          maxDistance={50}
         />
 
         <CameraRig
           targetX={targetCameraPos[0]}
           targetY={targetCameraPos[1] + verticalCenterOffset}
           targetZ={targetCameraZ}
+          navTrigger={navTrigger}
         />
 
         <color attach="background" args={['#111']} />

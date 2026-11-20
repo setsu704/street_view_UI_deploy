@@ -39,7 +39,7 @@ const CameraRig = ({
   const isTransitioning = useRef(false);
   const lastTrigger = useRef(navTrigger);
 
-  // 矢印移動や比較モード切替が発生したときだけ自動移動をONにする
+  // 矢印移動・比較モード切替・視点リセットが発生したときだけ自動移動をONにする
   useEffect(() => {
     if (navTrigger !== lastTrigger.current) {
       lastTrigger.current = navTrigger;
@@ -287,6 +287,20 @@ const controlPanelStyle: React.CSSProperties = {
   fontSize: '12px',
 };
 
+const resetButtonStyle: React.CSSProperties = {
+  width: '100%',
+  marginTop: '14px',
+  padding: '8px 12px',
+  background: '#2c5282',
+  color: '#fff',
+  border: '1px solid #4299e1',
+  borderRadius: '6px',
+  fontWeight: 'bold',
+  fontSize: '12px',
+  cursor: 'pointer',
+  transition: 'background 0.2s',
+};
+
 const progressPanelStyle: React.CSSProperties = {
   position: 'absolute',
   top: '55px',
@@ -356,6 +370,15 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
 
   const handleToggleOriginalBelow = (checked: boolean) => {
     setShowOriginalBelow(checked);
+    setNavTrigger((n) => n + 1);
+  };
+
+  // 現在選択中の画像の正面・初期距離にカメラ視点をリセット
+  const handleResetView = () => {
+    const currentImg = images[currentImageIdx];
+    if (currentImg) {
+      setTargetCameraPos([currentImg.position[0], currentImg.position[1]]);
+    }
     setNavTrigger((n) => n + 1);
   };
 
@@ -539,6 +562,16 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
             />
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={handleResetView}
+          style={resetButtonStyle}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#3182ce')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = '#2c5282')}
+        >
+          視点をリセット (Reset View)
+        </button>
       </div>
 
       {/* 3D空間キャンバス */}

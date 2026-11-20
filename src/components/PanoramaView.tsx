@@ -41,7 +41,6 @@ const CameraRig = ({
   const isTransitioning = useRef(false);
   const lastTrigger = useRef(navTrigger);
 
-  // 矢印移動・表示モード切替・視点リセットが発生したときだけ自動移動をONにする
   useEffect(() => {
     if (navTrigger !== lastTrigger.current) {
       lastTrigger.current = navTrigger;
@@ -49,7 +48,6 @@ const CameraRig = ({
     }
   }, [navTrigger]);
 
-  // ユーザーがマウスホイールやドラッグ操作を始めたら自動移動を即座に解除
   useEffect(() => {
     const orbit = controls as unknown as {
       addEventListener?: (event: string, listener: () => void) => void;
@@ -87,7 +85,6 @@ const CameraRig = ({
       orbit.update();
     }
 
-    // 目標位置に十分近づいたら自動追従を終了し、自由操作状態にする
     const dist =
       Math.abs(camera.position.x - targetX) +
       Math.abs(camera.position.y - targetY) +
@@ -126,19 +123,24 @@ const TomatoBoundingBoxes = ({ detections }: { detections: DetectionBox[] }) => 
           [left, top, 0],
         ];
 
+        const labelText =
+          box.rawLabel && box.rawLabel !== box.label
+            ? `#${idx + 1} ${box.label}(${box.rawLabel}) ${(box.score * 100).toFixed(1)}%`
+            : `#${idx + 1} ${box.label} ${(box.score * 100).toFixed(1)}%`;
+
         return (
           <group key={idx}>
             <Line points={rectPoints} color="#ff1a1a" lineWidth={2.5} />
             <Text
               position={[left, top + 0.06, 0.01]}
-              fontSize={0.09}
+              fontSize={0.085}
               color="#ff3333"
               anchorX="left"
               anchorY="bottom"
               outlineWidth={0.01}
               outlineColor="#000000"
             >
-              {`${box.label} ${(box.score * 100).toFixed(0)}%`}
+              {labelText}
             </Text>
           </group>
         );
@@ -180,7 +182,6 @@ const ImagePanel = ({
 
     const targetOpacity = distanceX < IMAGE_WIDTH * 0.6 ? OPACITY_VISIBLE : OPACITY_INVISIBLE;
 
-    // 上段の透明度アニメーション
     const topMat = topMeshRef.current.material;
     if (topMat && 'opacity' in topMat) {
       (topMat as THREE.Material & { opacity: number }).opacity = THREE.MathUtils.lerp(
@@ -190,7 +191,6 @@ const ImagePanel = ({
       );
     }
 
-    // 下段（元画像）の透明度アニメーション
     if (bottomMeshRef.current) {
       const bottomMat = bottomMeshRef.current.material;
       if (bottomMat && 'opacity' in bottomMat) {
@@ -207,7 +207,6 @@ const ImagePanel = ({
 
   return (
     <group ref={groupRef} position={[position[0], position[1], position[2]]} renderOrder={index}>
-      {/* 上段: メイン画像（検出モードまたは比較モード時は赤枠あり、元画像のみモード時は赤枠なし） */}
       <group position={[0, 0, 0]}>
         <DreiImage
           ref={topMeshRef}
@@ -220,7 +219,6 @@ const ImagePanel = ({
         {showDetections && <TomatoBoundingBoxes detections={detections} />}
       </group>
 
-      {/* 下段: 比較用の元画像（枠なし・比較モードのときのみ描画） */}
       {showOriginalBelow && (
         <group position={[0, bottomOffsetY, 0]}>
           <DreiImage
@@ -279,7 +277,7 @@ const controlPanelStyle: React.CSSProperties = {
   top: '55px',
   right: '20px',
   zIndex: 100,
-  background: 'rgba(0, 0, 0, 0.8)',
+  background: 'rgba(0, 0, 0, 0.82)',
   padding: '16px',
   borderRadius: '12px',
   border: '1px solid #444',
@@ -308,12 +306,12 @@ const progressPanelStyle: React.CSSProperties = {
   top: '55px',
   left: '20px',
   zIndex: 100,
-  background: 'rgba(0, 0, 0, 0.82)',
+  background: 'rgba(0, 0, 0, 0.85)',
   padding: '14px',
   borderRadius: '12px',
   border: '1px solid #319795',
   color: '#e2e8f0',
-  width: '340px',
+  width: '380px',
   fontFamily: 'monospace',
   fontSize: '11px',
 };
@@ -331,18 +329,16 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
   const [navTrigger, setNavTrigger] = useState(0);
   const [displayMode, setDisplayMode] = useState<DisplayMode>('detection_only');
   const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
-  const [showLogs, setShowLogs] = useState(true);
-
-  const showDetections = displayMode !== 'original_only';
-  const showOriginalBelow = displayMode === 'compare';
+  const [showDetailsPanel, setShowDetailsPanel] = useState(true);
+  const [leftTab, setLeftTab] = useState<'current' | 'logs'>('current');
 
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (logContainerRef.current) {
+    if (logContainerRef.current && leftTab === 'logs') {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [detectionData?.logs]);
+  }, [detectionData?.logs, leftTab]);
 
   useEffect(() => {
     if (images.length > 0) {
@@ -356,7 +352,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     return idx === -1 ? 0 : idx;
   }, [images, targetCameraPos]);
 
-  // 左矢印（←）：画面左側の画像へ移動（X座標がマイナス方向のためインデックスを増やす）
+  // 左矢印（←）：画面左側の画像へ移動
   const moveLeft = () => {
     if (currentImageIdx < images.length - 1) {
       const next = images[currentImageIdx + 1];
@@ -365,7 +361,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     }
   };
 
-  // 右矢印（→）：画面右側の画像へ移動（X座標がプラス方向のためインデックスを減らす）
+  // 右矢印（→）：画面右側の画像へ移動
   const moveRight = () => {
     if (currentImageIdx > 0) {
       const prev = images[currentImageIdx - 1];
@@ -379,7 +375,6 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     setNavTrigger((n) => n + 1);
   };
 
-  // 現在選択中の画像の正面・初期距離にカメラ視点をリセット
   const handleResetView = () => {
     const currentImg = images[currentImageIdx];
     if (currentImg) {
@@ -397,7 +392,9 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     return result;
   }, [detectionData, confThreshold]);
 
-  const currentDetectionsCount = filteredDetectionsMap[images[currentImageIdx]?.filename]?.length || 0;
+  const currentImage = images[currentImageIdx];
+  const currentBoxes = currentImage ? filteredDetectionsMap[currentImage.filename] || [] : [];
+  const currentDetectionsCount = currentBoxes.length;
 
   const totalImages = detectionData?.totalImages || images.length || 0;
   const processedImages = detectionData?.processedImages ?? totalImages;
@@ -411,6 +408,9 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     : detectionData
     ? `事前検出データ読込済 (${detectionData.detectedImagesCount}/${totalImages}枚で反応 / 計${detectionData.totalBoxesCount}個)`
     : '検出データ待機中...';
+
+  const showDetections = displayMode !== 'original_only';
+  const showOriginalBelow = displayMode === 'compare';
 
   const verticalCenterOffset = showOriginalBelow ? -(IMAGE_HEIGHT + ROW_GAP) / 2 : 0;
   const targetCameraZ = showOriginalBelow ? IMAGE_WIDTH * 2.1 : IMAGE_WIDTH * 1.5;
@@ -442,25 +442,25 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
         </p>
       </header>
 
-      {/* 左上: YOLO検出の途中経過＆結果ログパネル */}
+      {/* 左上: 検出データ詳細 ＆ 実行ログパネル */}
       <div style={progressPanelStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
           <span style={{ fontWeight: 'bold', color: isRunning ? '#f6e05e' : '#4fd1c5', fontSize: '12px' }}>
-            {isRunning ? `● 検出処理中 (${progressPercent}%)` : `✓ 検出ログ (${progressPercent}%)`}
+            {isRunning ? `● 検出処理中 (${progressPercent}%)` : `✓ YOLO検出データ (${progressPercent}%)`}
           </span>
           <button
-            onClick={() => setShowLogs(!showLogs)}
+            onClick={() => setShowDetailsPanel(!showDetailsPanel)}
             style={{
               background: '#2d3748',
               color: '#fff',
               border: '1px solid #4a5568',
               borderRadius: '4px',
-              padding: '2px 6px',
+              padding: '2px 8px',
               cursor: 'pointer',
               fontSize: '10px',
             }}
           >
-            {showLogs ? 'ログを隠す' : 'ログを表示'}
+            {showDetailsPanel ? 'パネルを隠す' : '詳細を表示'}
           </button>
         </div>
 
@@ -477,36 +477,141 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
         </div>
 
         {detectionData && (
-          <div style={{ marginBottom: '6px', color: '#cbd5e0' }}>
-            進捗: {processedImages} / {totalImages} 枚 ｜ 反応画像: {detectionData.detectedImagesCount} 枚 (計 {detectionData.totalBoxesCount} 個)
+          <div style={{ marginBottom: '8px', color: '#cbd5e0' }}>
+            全体: {processedImages}/{totalImages}枚 ｜ 反応: {detectionData.detectedImagesCount}枚 (計 {detectionData.totalBoxesCount}個)
           </div>
         )}
 
-        {showLogs && (
-          <div
-            ref={logContainerRef}
-            style={{
-              maxHeight: '160px',
-              overflowY: 'auto',
-              background: 'rgba(0, 0, 0, 0.65)',
-              padding: '6px',
-              borderRadius: '6px',
-              border: '1px solid #2d3748',
-              lineHeight: '1.4',
-            }}
-          >
-            {detectionData?.logs && detectionData.logs.length > 0 ? (
-              detectionData.logs.map((log, i) => (
-                <div key={i} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {log}
+        {showDetailsPanel && (
+          <>
+            {/* タブ切り替えボタン */}
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+              <button
+                onClick={() => setLeftTab('current')}
+                style={{
+                  flex: 1,
+                  padding: '5px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #4fd1c5',
+                  background: leftTab === 'current' ? '#285e61' : '#1a202c',
+                  color: '#fff',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                }}
+              >
+                現在の画像の検出詳細 ({currentDetectionsCount}個)
+              </button>
+              <button
+                onClick={() => setLeftTab('logs')}
+                style={{
+                  flex: 1,
+                  padding: '5px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #4a5568',
+                  background: leftTab === 'logs' ? '#2d3748' : '#1a202c',
+                  color: '#cbd5e0',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                }}
+              >
+                全体ログ ({detectionData?.logs?.length || 0}行)
+              </button>
+            </div>
+
+            {leftTab === 'current' ? (
+              /* 現在表示中の画像の各ボックス詳細（ラベル・類似度/確信度・座標・サイズ） */
+              <div
+                style={{
+                  maxHeight: '220px',
+                  overflowY: 'auto',
+                  background: 'rgba(0, 0, 0, 0.7)',
+                  padding: '8px',
+                  borderRadius: '6px',
+                  border: '1px solid #2d3748',
+                }}
+              >
+                <div style={{ color: '#81e6d9', marginBottom: '6px', fontWeight: 'bold' }}>
+                  対象: {currentImage?.filename || '-'} (しきい値 {Math.round(confThreshold * 100)}% 以上)
                 </div>
-              ))
+
+                {currentBoxes.length === 0 ? (
+                  <div style={{ color: '#a0aec0', padding: '6px 0' }}>
+                    この画像で検出されたトマトはありません
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #4a5568', color: '#a0aec0', textAlign: 'left' }}>
+                        <th style={{ padding: '4px 2px' }}>No</th>
+                        <th style={{ padding: '4px 2px' }}>ラベル</th>
+                        <th style={{ padding: '4px 2px' }}>類似度</th>
+                        <th style={{ padding: '4px 2px' }}>大きさ(幅×高)</th>
+                        <th style={{ padding: '4px 2px' }}>中心位置</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {currentBoxes.map((box, idx) => {
+                        const widthPct = ((box.x2 - box.x1) * 100).toFixed(1);
+                        const heightPct = ((box.y2 - box.y1) * 100).toFixed(1);
+                        const centerX = (((box.x1 + box.x2) / 2) * 100).toFixed(0);
+                        const centerY = (((box.y1 + box.y2) / 2) * 100).toFixed(0);
+
+                        return (
+                          <tr key={idx} style={{ borderBottom: '1px solid #2d3748' }}>
+                            <td style={{ padding: '5px 2px', color: '#fc8181', fontWeight: 'bold' }}>#{idx + 1}</td>
+                            <td style={{ padding: '5px 2px', color: '#fff' }}>
+                              {box.label}
+                              {box.rawLabel && box.rawLabel !== box.label && (
+                                <span style={{ color: '#90cdf4', fontSize: '10px' }}> ({box.rawLabel})</span>
+                              )}
+                            </td>
+                            <td style={{ padding: '5px 2px', color: '#68d391', fontWeight: 'bold' }}>
+                              {(box.score * 100).toFixed(1)}%
+                            </td>
+                            <td style={{ padding: '5px 2px', color: '#cbd5e0' }}>
+                              {widthPct}% × {heightPct}%
+                            </td>
+                            <td style={{ padding: '5px 2px', color: '#cbd5e0' }}>
+                              ({centerX}%, {centerY}%)
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             ) : (
-              <div style={{ color: '#a0aec0' }}>
-                {errorText || 'ログデータがありません'}
+              /* 全体実行ログ（横スクロール対応で最後まで表示） */
+              <div
+                ref={logContainerRef}
+                style={{
+                  maxHeight: '220px',
+                  overflowY: 'auto',
+                  overflowX: 'auto',
+                  background: 'rgba(0, 0, 0, 0.7)',
+                  padding: '8px',
+                  borderRadius: '6px',
+                  border: '1px solid #2d3748',
+                  lineHeight: '1.5',
+                }}
+              >
+                {detectionData?.logs && detectionData.logs.length > 0 ? (
+                  detectionData.logs.map((log, i) => (
+                    <div key={i} style={{ whiteSpace: 'nowrap' }}>
+                      {log}
+                    </div>
+                  ))
+                ) : (
+                  <div style={{ color: '#a0aec0' }}>
+                    {errorText || 'ログデータがありません'}
+                  </div>
+                )}
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 

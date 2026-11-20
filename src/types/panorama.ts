@@ -20,6 +20,7 @@ export interface DetectionBox {
   y2: number;
   score: number;
   label: string;
+  rawLabel?: string;
 }
 
 export interface DetectionsJson {

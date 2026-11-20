@@ -23,6 +23,8 @@ const OPACITY_INVISIBLE = 0.5;
 const CURVE_FACTOR = 0.000015;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.25;
 
+type DisplayMode = 'detection_only' | 'compare' | 'original_only';
+
 // カメラのスムーズな追従制御（ユーザー操作時は妨げない）
 const CameraRig = ({
   targetX,
@@ -39,7 +41,7 @@ const CameraRig = ({
   const isTransitioning = useRef(false);
   const lastTrigger = useRef(navTrigger);
 
-  // 矢印移動・比較モード切替・視点リセットが発生したときだけ自動移動をONにする
+  // 矢印移動・表示モード切替・視点リセットが発生したときだけ自動移動をONにする
   useEffect(() => {
     if (navTrigger !== lastTrigger.current) {
       lastTrigger.current = navTrigger;
@@ -145,7 +147,7 @@ const TomatoBoundingBoxes = ({ detections }: { detections: DetectionBox[] }) => 
   );
 };
 
-// 3D空間上の各画像パネル（上段：検出枠付き / 下段：元画像）
+// 3D空間上の各画像パネル（上段：メイン画像 / 下段：比較用元画像）
 const ImagePanel = ({
   url,
   position,
@@ -205,7 +207,7 @@ const ImagePanel = ({
 
   return (
     <group ref={groupRef} position={[position[0], position[1], position[2]]} renderOrder={index}>
-      {/* 上段: YOLO検出画像 */}
+      {/* 上段: メイン画像（検出モードまたは比較モード時は赤枠あり、元画像のみモード時は赤枠なし） */}
       <group position={[0, 0, 0]}>
         <DreiImage
           ref={topMeshRef}
@@ -218,7 +220,7 @@ const ImagePanel = ({
         {showDetections && <TomatoBoundingBoxes detections={detections} />}
       </group>
 
-      {/* 下段: 元画像（枠なし・オンのときのみ描画） */}
+      {/* 下段: 比較用の元画像（枠なし・比較モードのときのみ描画） */}
       {showOriginalBelow && (
         <group position={[0, bottomOffsetY, 0]}>
           <DreiImage
@@ -282,7 +284,7 @@ const controlPanelStyle: React.CSSProperties = {
   borderRadius: '12px',
   border: '1px solid #444',
   color: '#fff',
-  width: '250px',
+  width: '260px',
   fontFamily: 'sans-serif',
   fontSize: '12px',
 };
@@ -327,10 +329,12 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
 
   const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
   const [navTrigger, setNavTrigger] = useState(0);
-  const [showDetections, setShowDetections] = useState(true);
-  const [showOriginalBelow, setShowOriginalBelow] = useState(false);
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('detection_only');
   const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
   const [showLogs, setShowLogs] = useState(true);
+
+  const showDetections = displayMode !== 'original_only';
+  const showOriginalBelow = displayMode === 'compare';
 
   const logContainerRef = useRef<HTMLDivElement>(null);
 
@@ -370,8 +374,8 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     }
   };
 
-  const handleToggleOriginalBelow = (checked: boolean) => {
-    setShowOriginalBelow(checked);
+  const handleChangeDisplayMode = (mode: DisplayMode) => {
+    setDisplayMode(mode);
     setNavTrigger((n) => n + 1);
   };
 
@@ -508,45 +512,65 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
 
       {/* 右上: 表示コントロール */}
       <div style={controlPanelStyle}>
-        <div style={{ fontWeight: 'bold', marginBottom: '12px', color: '#00ffcc' }}>Display Controls</div>
+        <div style={{ fontWeight: 'bold', marginBottom: '10px', color: '#00ffcc' }}>Display Controls</div>
 
-        <label
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            gap: '8px',
-            color: '#63b3ed',
-            fontWeight: 'bold',
-            marginBottom: '10px',
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={showOriginalBelow}
-            onChange={(e) => handleToggleOriginalBelow(e.target.checked)}
-          />
-          下に元画像を並べて比較
-        </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              cursor: 'pointer',
+              color: '#ff6666',
+              fontWeight: 'bold',
+            }}
+          >
+            <input
+              type="radio"
+              name="displayMode"
+              checked={displayMode === 'detection_only'}
+              onChange={() => handleChangeDisplayMode('detection_only')}
+            />
+            検出画像のみ（赤枠あり）
+          </label>
 
-        <label
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            gap: '8px',
-            color: '#ff6666',
-            fontWeight: 'bold',
-            marginBottom: '10px',
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={showDetections}
-            onChange={(e) => setShowDetections(e.target.checked)}
-          />
-          Show Tomato Boxes (YOLO26)
-        </label>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              cursor: 'pointer',
+              color: '#63b3ed',
+              fontWeight: 'bold',
+            }}
+          >
+            <input
+              type="radio"
+              name="displayMode"
+              checked={displayMode === 'compare'}
+              onChange={() => handleChangeDisplayMode('compare')}
+            />
+            上下で比較（上:検出 / 下:元画像）
+          </label>
+
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              cursor: 'pointer',
+              color: '#e2e8f0',
+            }}
+          >
+            <input
+              type="radio"
+              name="displayMode"
+              checked={displayMode === 'original_only'}
+              onChange={() => handleChangeDisplayMode('original_only')}
+            />
+            元画像のみ（赤枠なし）
+          </label>
+        </div>
 
         {showDetections && (
           <div>

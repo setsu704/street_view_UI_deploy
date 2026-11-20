@@ -16,21 +16,31 @@ const BUILD_TIME = new Date().toLocaleString('ja-JP', {
 
 export const IMAGE_WIDTH = 3.2;
 export const IMAGE_HEIGHT = 2.4;
+const ROW_GAP = 0.25; // 上段（検出画像）と下段（元画像）の隙間
 
-const OPACITY_VISIBLE = 0.9;
+const OPACITY_VISIBLE = 0.95;
 const OPACITY_INVISIBLE = 0.5;
 const CURVE_FACTOR = 0.000015;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.25;
 
 // カメラのスムーズな追従制御
-const CameraRig = ({ targetX, targetY }: { targetX: number; targetY: number }) => {
+const CameraRig = ({
+  targetX,
+  targetY,
+  targetZ,
+}: {
+  targetX: number;
+  targetY: number;
+  targetZ: number;
+}) => {
   const { camera, controls } = useThree();
 
   useFrame((_, delta) => {
     const dampSpeed = 5 * delta;
     const nextX = THREE.MathUtils.lerp(camera.position.x, targetX, dampSpeed);
     const nextY = THREE.MathUtils.lerp(camera.position.y, targetY, dampSpeed);
-    camera.position.set(nextX, nextY, camera.position.z);
+    const nextZ = THREE.MathUtils.lerp(camera.position.z, targetZ, dampSpeed);
+    camera.position.set(nextX, nextY, nextZ);
 
     if (controls) {
       const orbit = controls as unknown as { target: THREE.Vector3; update: () => void };
@@ -85,7 +95,7 @@ const TomatoBoundingBoxes = ({ detections }: { detections: DetectionBox[] }) => 
   );
 };
 
-// 3D空間上の各画像パネル
+// 3D空間上の各画像パネル（上段：検出枠付き / 下段：元画像）
 const ImagePanel = ({
   url,
   position,
@@ -94,6 +104,7 @@ const ImagePanel = ({
   curveFactor = CURVE_FACTOR,
   detections = [],
   showDetections = true,
+  showOriginalBelow = false,
 }: {
   url: string;
   position: [number, number, number];
@@ -102,12 +113,14 @@ const ImagePanel = ({
   curveFactor?: number;
   detections?: DetectionBox[];
   showDetections?: boolean;
+  showOriginalBelow?: boolean;
 }) => {
   const groupRef = useRef<THREE.Group>(null!);
-  const meshRef = useRef<THREE.Mesh>(null!);
+  const topMeshRef = useRef<THREE.Mesh>(null!);
+  const bottomMeshRef = useRef<THREE.Mesh>(null!);
 
   useFrame(({ camera }) => {
-    if (!groupRef.current || !meshRef.current) return;
+    if (!groupRef.current || !topMeshRef.current) return;
 
     const distanceX = Math.abs(position[0] - camera.position.x);
 
@@ -124,27 +137,60 @@ const ImagePanel = ({
     groupRef.current.renderOrder = isFront ? 999 : index;
 
     const targetOpacity = distanceX < IMAGE_WIDTH * 0.6 ? OPACITY_VISIBLE : OPACITY_INVISIBLE;
-    const material = meshRef.current.material;
-    if (material && 'opacity' in material) {
-      (material as THREE.Material & { opacity: number }).opacity = THREE.MathUtils.lerp(
-        (material as THREE.Material & { opacity: number }).opacity,
+
+    // 上段の透明度アニメーション
+    const topMat = topMeshRef.current.material;
+    if (topMat && 'opacity' in topMat) {
+      (topMat as THREE.Material & { opacity: number }).opacity = THREE.MathUtils.lerp(
+        (topMat as THREE.Material & { opacity: number }).opacity,
         targetOpacity,
         0.1
       );
     }
+
+    // 下段（元画像）の透明度アニメーション
+    if (bottomMeshRef.current) {
+      const bottomMat = bottomMeshRef.current.material;
+      if (bottomMat && 'opacity' in bottomMat) {
+        (bottomMat as THREE.Material & { opacity: number }).opacity = THREE.MathUtils.lerp(
+          (bottomMat as THREE.Material & { opacity: number }).opacity,
+          targetOpacity,
+          0.1
+        );
+      }
+    }
   });
+
+  const bottomOffsetY = -(IMAGE_HEIGHT + ROW_GAP);
 
   return (
     <group ref={groupRef} position={[position[0], position[1], position[2]]} renderOrder={index}>
-      <DreiImage
-        ref={meshRef}
-        url={url}
-        scale={[IMAGE_WIDTH, IMAGE_HEIGHT]}
-        transparent
-        opacity={OPACITY_INVISIBLE}
-        side={THREE.DoubleSide}
-      />
-      {showDetections && <TomatoBoundingBoxes detections={detections} />}
+      {/* 上段: YOLO検出画像 */}
+      <group position={[0, 0, 0]}>
+        <DreiImage
+          ref={topMeshRef}
+          url={url}
+          scale={[IMAGE_WIDTH, IMAGE_HEIGHT]}
+          transparent
+          opacity={OPACITY_INVISIBLE}
+          side={THREE.DoubleSide}
+        />
+        {showDetections && <TomatoBoundingBoxes detections={detections} />}
+      </group>
+
+      {/* 下段: 元画像（枠なし・オンのときのみ描画） */}
+      {showOriginalBelow && (
+        <group position={[0, bottomOffsetY, 0]}>
+          <DreiImage
+            ref={bottomMeshRef}
+            url={url}
+            scale={[IMAGE_WIDTH, IMAGE_HEIGHT]}
+            transparent
+            opacity={OPACITY_INVISIBLE}
+            side={THREE.DoubleSide}
+          />
+        </group>
+      )}
     </group>
   );
 };
@@ -196,7 +242,7 @@ const controlPanelStyle: React.CSSProperties = {
   borderRadius: '12px',
   border: '1px solid #444',
   color: '#fff',
-  width: '240px',
+  width: '250px',
   fontFamily: 'sans-serif',
   fontSize: '12px',
 };
@@ -229,12 +275,12 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
   const [viewMode, setViewMode] = useState<ViewMode>('cylinder');
   const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
   const [showDetections, setShowDetections] = useState(true);
+  const [showOriginalBelow, setShowOriginalBelow] = useState(false); // 初期はオフ（チェックでオン）
   const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
   const [showLogs, setShowLogs] = useState(true);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
 
-  // ログが更新されたら自動スクロール
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
@@ -285,10 +331,17 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
   const headerStatus = errorText
     ? errorText
     : isRunning
-    ? `YOLO26n 検出実行中... (${processedImages}/${totalImages}枚)`
+    ? `YOLO26 検出実行中... (${processedImages}/${totalImages}枚)`
     : detectionData
     ? `事前検出データ読込済 (${detectionData.detectedImagesCount}/${totalImages}枚で反応 / 計${detectionData.totalBoxesCount}個)`
     : '検出データ待機中...';
+
+  // オン/オフ切り替え時にカメラの注視点と距離（ズーム）も滑らかに連動させる
+  const verticalCenterOffset = showOriginalBelow ? -(IMAGE_HEIGHT + ROW_GAP) / 2 : 0;
+  const targetCameraZ = showOriginalBelow ? IMAGE_WIDTH * 2.1 : IMAGE_WIDTH * 1.5;
+  const gridY = showOriginalBelow
+    ? -IMAGE_HEIGHT * 1.5 - ROW_GAP - 0.2
+    : -IMAGE_HEIGHT / 2 - 0.2;
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#000', overflow: 'hidden', position: 'relative' }}>
@@ -426,6 +479,25 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
             alignItems: 'center',
             cursor: 'pointer',
             gap: '8px',
+            color: '#63b3ed',
+            fontWeight: 'bold',
+            marginBottom: '10px',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={showOriginalBelow}
+            onChange={(e) => setShowOriginalBelow(e.target.checked)}
+          />
+          下に元画像を並べて比較
+        </label>
+
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            cursor: 'pointer',
+            gap: '8px',
             color: '#ff6666',
             fontWeight: 'bold',
             marginBottom: '10px',
@@ -436,7 +508,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
             checked={showDetections}
             onChange={(e) => setShowDetections(e.target.checked)}
           />
-          Show Tomato Boxes (YOLO26n)
+          Show Tomato Boxes (YOLO26)
         </label>
 
         {showDetections && (
@@ -461,7 +533,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
       <Canvas>
         <PerspectiveCamera
           makeDefault
-          position={[initialPos[0], initialPos[1], IMAGE_WIDTH * 1.5]}
+          position={[initialPos[0], initialPos[1] + verticalCenterOffset, targetCameraZ]}
           fov={60}
           far={100000}
         />
@@ -470,17 +542,21 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
           makeDefault
           enableDamping
           dampingFactor={0.1}
-          target={[initialPos[0], initialPos[1], 0]}
+          target={[initialPos[0], initialPos[1] + verticalCenterOffset, 0]}
           enablePan={false}
         />
 
-        <CameraRig targetX={targetCameraPos[0]} targetY={targetCameraPos[1]} />
+        <CameraRig
+          targetX={targetCameraPos[0]}
+          targetY={targetCameraPos[1] + verticalCenterOffset}
+          targetZ={targetCameraZ}
+        />
 
         <color attach="background" args={['#111']} />
         <ambientLight intensity={2} />
 
         <Grid
-          position={[initialPos[0], -IMAGE_HEIGHT / 2 - 0.2, 0]}
+          position={[initialPos[0], gridY, 0]}
           args={[2000, 2000]}
           cellSize={1}
           cellThickness={0.2}
@@ -503,6 +579,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
               curveFactor={curveFactor}
               detections={filteredDetectionsMap[img.filename]}
               showDetections={showDetections}
+              showOriginalBelow={showOriginalBelow}
             />
           ))}
         </Suspense>

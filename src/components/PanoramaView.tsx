@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState, useEffect, Suspense } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line, Text } from '@react-three/drei';
 import * as THREE from 'three';
-import type { DetectionBox, DetectionsJson, ImageItem, ViewMode } from '../types/panorama';
+import type { DetectionBox, DetectionsJson, ImageItem } from '../types/panorama';
 
 const BUILD_TIME = new Date().toLocaleString('ja-JP', {
   timeZone: 'Asia/Tokyo',
@@ -100,8 +100,6 @@ const ImagePanel = ({
   url,
   position,
   index,
-  mode = 'cylinder',
-  curveFactor = CURVE_FACTOR,
   detections = [],
   showDetections = true,
   showOriginalBelow = false,
@@ -109,8 +107,6 @@ const ImagePanel = ({
   url: string;
   position: [number, number, number];
   index: number;
-  mode?: ViewMode;
-  curveFactor?: number;
   detections?: DetectionBox[];
   showDetections?: boolean;
   showOriginalBelow?: boolean;
@@ -123,13 +119,7 @@ const ImagePanel = ({
     if (!groupRef.current || !topMeshRef.current) return;
 
     const distanceX = Math.abs(position[0] - camera.position.x);
-
-    let dynamicZ = 0;
-    if (mode === 'cylinder') {
-      dynamicZ = -Math.pow(distanceX, 2) * curveFactor;
-    } else if (mode === 'tunnel') {
-      dynamicZ = -Math.pow(distanceX, 2.5) * (curveFactor * 10);
-    }
+    const dynamicZ = -Math.pow(distanceX, 2) * CURVE_FACTOR;
 
     groupRef.current.position.set(position[0], position[1], dynamicZ);
 
@@ -272,10 +262,8 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
   const initialPos = images[0]?.position || [0, 0, 0];
 
   const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
-  const [viewMode, setViewMode] = useState<ViewMode>('cylinder');
-  const [curveFactor, setCurveFactor] = useState(CURVE_FACTOR);
   const [showDetections, setShowDetections] = useState(true);
-  const [showOriginalBelow, setShowOriginalBelow] = useState(false); // 初期はオフ（チェックでオン）
+  const [showOriginalBelow, setShowOriginalBelow] = useState(false);
   const [confThreshold, setConfThreshold] = useState(DEFAULT_CONFIDENCE_THRESHOLD);
   const [showLogs, setShowLogs] = useState(true);
 
@@ -336,7 +324,6 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     ? `事前検出データ読込済 (${detectionData.detectedImagesCount}/${totalImages}枚で反応 / 計${detectionData.totalBoxesCount}個)`
     : '検出データ待機中...';
 
-  // オン/オフ切り替え時にカメラの注視点と距離（ズーム）も滑らかに連動させる
   const verticalCenterOffset = showOriginalBelow ? -(IMAGE_HEIGHT + ROW_GAP) / 2 : 0;
   const targetCameraZ = showOriginalBelow ? IMAGE_WIDTH * 2.1 : IMAGE_WIDTH * 1.5;
   const gridY = showOriginalBelow
@@ -435,43 +422,9 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
         )}
       </div>
 
-      {/* 右上: 3D表示コントロール */}
+      {/* 右上: 表示コントロール */}
       <div style={controlPanelStyle}>
-        <div style={{ fontWeight: 'bold', marginBottom: '10px', color: '#00ffcc' }}>3D View Controls</div>
-
-        <label style={{ display: 'block', marginBottom: '4px' }}>Depth Mode:</label>
-        <select
-          value={viewMode}
-          onChange={(e) => setViewMode(e.target.value as ViewMode)}
-          style={{
-            width: '100%',
-            padding: '6px',
-            background: '#222',
-            color: '#fff',
-            border: '1px solid #555',
-            borderRadius: '4px',
-            marginBottom: '12px',
-          }}
-        >
-          <option value="plane">Plane (Flat)</option>
-          <option value="cylinder">Cylinder (Curved)</option>
-          <option value="tunnel">Tunnel (Deep)</option>
-        </select>
-
-        {viewMode !== 'plane' && (
-          <div style={{ marginBottom: '12px' }}>
-            <label style={{ display: 'block', marginBottom: '4px' }}>Curve Factor:</label>
-            <input
-              type="range"
-              min="0.000005"
-              max="0.000050"
-              step="0.000005"
-              value={curveFactor}
-              onChange={(e) => setCurveFactor(parseFloat(e.target.value))}
-              style={{ width: '100%' }}
-            />
-          </div>
-        )}
+        <div style={{ fontWeight: 'bold', marginBottom: '12px', color: '#00ffcc' }}>Display Controls</div>
 
         <label
           style={{
@@ -575,8 +528,6 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
               index={idx}
               url={img.url}
               position={img.position}
-              mode={viewMode}
-              curveFactor={curveFactor}
               detections={filteredDetectionsMap[img.filename]}
               showDetections={showDetections}
               showOriginalBelow={showOriginalBelow}

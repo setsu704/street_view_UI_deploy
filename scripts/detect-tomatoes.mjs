@@ -7,7 +7,7 @@ import sharp from 'sharp';
 // --- 設定 ---
 const CSV_PATH = path.resolve('public/images_a_0_0.csv');
 const IMAGES_DIR = path.resolve('public/images/left');
-const MODEL_PATH = path.resolve('public/models/yolo26n.onnx');
+const MODEL_PATH = path.resolve('public/models/yolo26m.onnx');
 const OUTPUT_JSON_PATH = path.resolve('public/detections.json');
 
 const YOLO_INPUT_SIZE = 640;

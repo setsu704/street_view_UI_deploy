@@ -14,6 +14,46 @@ const YOLO_INPUT_SIZE = 640;
 const MIN_STORE_SCORE = 0.15;
 const NMS_IOU_THRESHOLD = 0.45;
 
+// 誤検出防止用フィルタ設定
+const MIN_ASPECT_RATIO = 0.60; // 幅/高さ の最小値（細長い茎・支柱を除外）
+const MAX_ASPECT_RATIO = 1.65; // 幅/高さ の最大値
+const MIN_BOX_AREA = 0.0005;   // 画像全体に対する最小面積比（0.05%未満のノイズを除外）
+const MAX_BOX_AREA = 0.35;     // 画像全体に対する最大面積比（35%超の背景誤認を除外）
+
+// COCO 80クラス名リスト
+const COCO_CLASSES = [
+  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+  'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+  'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+  'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+  'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+  'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+  'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+  'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+  'hair drier', 'toothbrush',
+];
+
+// トマトとして採用するCOCOクラスID（32: sports ball, 47: apple, 49: orange）
+// ※葉っぱ(58: potted plant, 50: broccoli)や人工物を除外
+const TARGET_COCO_CLASS_IDS = new Set([32, 47, 49]);
+
+// バウンディングボックスの形状・面積チェック
+function isValidTomatoShape(box) {
+  const w = box.x2 - box.x1;
+  const h = box.y2 - box.y1;
+  if (w <= 0 || h <= 0) return false;
+
+  const aspect = w / h;
+  const area = w * h;
+
+  return (
+    aspect >= MIN_ASPECT_RATIO &&
+    aspect <= MAX_ASPECT_RATIO &&
+    area >= MIN_BOX_AREA &&
+    area <= MAX_BOX_AREA
+  );
+}
+
 // NMS（重複枠の統合）
 function applyNMS(boxes, iouThreshold) {
   if (boxes.length === 0) return [];
@@ -87,43 +127,70 @@ async function detectImage(session, imagePath) {
   const dims = output.dims;
 
   const rawBoxes = [];
-  const toNormalizedBox = (bx1, by1, bx2, by2, score) => ({
+  const toNormalizedBox = (bx1, by1, bx2, by2, score, rawLabel) => ({
     x1: Math.max(0, Math.min(1, (bx1 - padX) / newW)),
     y1: Math.max(0, Math.min(1, (by1 - padY) / newH)),
     x2: Math.max(0, Math.min(1, (bx2 - padX) / newW)),
     y2: Math.max(0, Math.min(1, (by2 - padY) / newH)),
     score: Number(score.toFixed(4)),
     label: 'tomato',
+    rawLabel,
   });
 
   if (dims.length === 3 && dims[2] === 6) {
+    // End-to-End 形式 [1, N, 6] (x1, y1, x2, y2, score, classId)
     const numDetections = dims[1];
     for (let i = 0; i < numDetections; i++) {
       const offset = i * 6;
       const score = data[offset + 4];
-      if (score >= MIN_STORE_SCORE) {
-        rawBoxes.push(
-          toNormalizedBox(data[offset], data[offset + 1], data[offset + 2], data[offset + 3], score)
+      const classId = Math.round(data[offset + 5]);
+
+      if (score >= MIN_STORE_SCORE && TARGET_COCO_CLASS_IDS.has(classId)) {
+        const box = toNormalizedBox(
+          data[offset],
+          data[offset + 1],
+          data[offset + 2],
+          data[offset + 3],
+          score,
+          COCO_CLASSES[classId] || `class_${classId}`
         );
+        if (isValidTomatoShape(box)) rawBoxes.push(box);
       }
     }
   } else if (dims.length === 3) {
+    // 標準 YOLO 出力形式 [1, 4 + numClasses, numAnchors]
     const numChannels = dims[1];
     const numAnchors = dims[2];
+    const numClasses = numChannels - 4;
+    const isCustomSingleClass = numClasses === 1;
+
     for (let i = 0; i < numAnchors; i++) {
       let maxScore = 0;
-      for (let c = 4; c < numChannels; c++) {
-        const s = data[c * numAnchors + i];
-        if (s > maxScore) maxScore = s;
+      let bestClassId = -1;
+
+      for (let c = 0; c < numClasses; c++) {
+        // COCO 80クラスモデルの場合は対象クラスのみ評価（独自1クラスモデルなら全て評価）
+        if (!isCustomSingleClass && !TARGET_COCO_CLASS_IDS.has(c)) continue;
+
+        const s = data[(c + 4) * numAnchors + i];
+        if (s > maxScore) {
+          maxScore = s;
+          bestClassId = c;
+        }
       }
-      if (maxScore >= MIN_STORE_SCORE) {
+
+      if (maxScore >= MIN_STORE_SCORE && bestClassId !== -1) {
         const cx = data[0 * numAnchors + i];
         const cy = data[1 * numAnchors + i];
         const w = data[2 * numAnchors + i];
         const h = data[3 * numAnchors + i];
-        rawBoxes.push(
-          toNormalizedBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, maxScore)
-        );
+
+        const rawLabel = isCustomSingleClass
+          ? 'tomato'
+          : COCO_CLASSES[bestClassId] || `class_${bestClassId}`;
+
+        const box = toNormalizedBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, maxScore, rawLabel);
+        if (isValidTomatoShape(box)) rawBoxes.push(box);
       }
     }
   }
@@ -135,7 +202,7 @@ async function detectImage(session, imagePath) {
 function saveProgressJson(payload) {
   const tempPath = `${OUTPUT_JSON_PATH}.tmp`;
   fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), 'utf-8');
-  fs.renameSync(tempPath, OUTPUT_JSON_PATH); // 読み込み中のファイル破損を防ぐためアトミックに置換
+  fs.renameSync(tempPath, OUTPUT_JSON_PATH);
 }
 
 // メイン処理
@@ -146,7 +213,7 @@ async function main() {
     const line = `[${time}] ${msg}`;
     console.log(line);
     logs.push(line);
-    if (logs.length > 50) logs.shift(); // サイト表示用に最新50件を保持
+    if (logs.length > 50) logs.shift();
   };
 
   addLog('CSVファイルを読み込み中...');
@@ -154,13 +221,12 @@ async function main() {
   const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
   const filenames = parsed.data.map((row) => row.filename?.trim()).filter(Boolean);
 
-  addLog(`対象画像数: ${filenames.length} 枚。YOLO26n モデルをロード中...`);
+  addLog(`対象画像数: ${filenames.length} 枚。YOLO26m モデルをロード中...`);
 
   const detectionsMap = {};
   let detectedImagesCount = 0;
   let totalBoxesCount = 0;
 
-  // 開始状態をJSONに書き出し
   saveProgressJson({
     status: 'running',
     generatedAt: new Date().toISOString(),
@@ -191,10 +257,14 @@ async function main() {
       if (boxes.length > 0) detectedImagesCount++;
       totalBoxesCount += boxes.length;
 
-      addLog(`[${i + 1}/${filenames.length}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)`);
+      const summary = boxes.map((b) => `${b.rawLabel}:${Math.round(b.score * 100)}%`).join(', ');
+      addLog(
+        `[${i + 1}/${filenames.length}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)${
+          summary ? ` [${summary}]` : ''
+        }`
+      );
     }
 
-    // 1枚終わるごとに途中経過を保存（サイト側がこれをリアルタイムに読み取る）
     saveProgressJson({
       status: 'running',
       generatedAt: new Date().toISOString(),
@@ -209,7 +279,6 @@ async function main() {
 
   addLog(`全処理完了! ${detectedImagesCount}/${filenames.length} 枚で検出（合計 ${totalBoxesCount} 個）`);
 
-  // 最終完了状態を保存
   saveProgressJson({
     status: 'completed',
     generatedAt: new Date().toISOString(),

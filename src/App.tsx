@@ -46,32 +46,33 @@ const processImagesForPanorama = (
 
 export default function App() {
   const [selectedCsv, setSelectedCsv] = useState<string>(CSV_OPTIONS[0].id);
-  const [rawLogs, setRawLogs] = useState<LogEntry[]>([]);
+  const [loadedData, setLoadedData] = useState<{ csvId: string; logs: LogEntry[] } | null>(null);
   const [detectionData, setDetectionData] = useState<DetectionsJson | null>(null);
   const [errorText, setErrorText] = useState<string>('');
-  const [loading, setLoading] = useState(true);
 
-  const currentOption = useMemo(
-    () => CSV_OPTIONS.find((opt) => opt.id === selectedCsv) || CSV_OPTIONS[0],
-    [selectedCsv]
-  );
-
-  // 1. 選択されたCSVの読み込み
+  // 1. 選択されたCSVの読み込み（csvIdとセットで保持して不整合を防ぐ）
   useEffect(() => {
-    setLoading(true);
+    let isCancelled = false;
+
     Papa.parse<LogEntry>(`/${selectedCsv}`, {
       download: true,
       header: true,
       skipEmptyLines: true,
       complete: (results: ParseResult<LogEntry>) => {
-        setRawLogs(results.data);
-        setLoading(false);
+        if (!isCancelled) {
+          setLoadedData({ csvId: selectedCsv, logs: results.data });
+        }
       },
       error: () => {
-        setRawLogs([]);
-        setLoading(false);
+        if (!isCancelled) {
+          setLoadedData({ csvId: selectedCsv, logs: [] });
+        }
       },
     });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [selectedCsv]);
 
   // 2. detections.json の取得＆実行中のリアルタイム監視（1秒間隔）
@@ -107,12 +108,14 @@ export default function App() {
     };
   }, []);
 
-  const images = useMemo(
-    () => processImagesForPanorama(rawLogs, IMAGE_WIDTH, currentOption.imageDir),
-    [rawLogs, currentOption.imageDir]
-  );
+  // 現在選択中のCSVと読み込み済みCSVが一致しているときだけ画像を生成する
+  const images = useMemo(() => {
+    if (!loadedData || loadedData.csvId !== selectedCsv) return [];
+    const opt = CSV_OPTIONS.find((o) => o.id === selectedCsv) || CSV_OPTIONS[0];
+    return processImagesForPanorama(loadedData.logs, IMAGE_WIDTH, opt.imageDir);
+  }, [loadedData, selectedCsv]);
 
-  if (loading && rawLogs.length === 0) {
+  if (!loadedData) {
     return (
       <div style={{ color: '#fff', background: '#000', height: '100vh', padding: '20px' }}>
         データを読み込み中...

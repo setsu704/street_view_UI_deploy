@@ -10,11 +10,13 @@ export const CSV_OPTIONS = [
   { id: 'images_a_100.csv', label: '100', imageDir: '/images/output' },
 ] as const;
 
-// CSVのファイル名（_a_50.png や _a_100.png など）から left フォルダ内の元画像名（.jpg）を生成
+// ファイル名から「left_日付_時刻」部分を抽出して left フォルダ内の元画像名（.jpg）を生成
 const toOriginalLeftFilename = (filename: string): string => {
-  return filename
-    .replace(/_a_(0_0|50|100)(?=\.[^.]+$)/i, '')
-    .replace(/\.png$/i, '.jpg');
+  const match = filename.match(/^(left_\d+_\d+)/i);
+  if (match) {
+    return `${match[1]}.jpg`;
+  }
+  return filename.replace(/\.png$/i, '.jpg');
 };
 
 const processImagesForPanorama = (

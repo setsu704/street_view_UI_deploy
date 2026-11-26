@@ -7,10 +7,10 @@ import sharp from 'sharp';
 // --- 設定 ---
 const CSV_PATH = path.resolve('public/images_a_0_0.csv');
 const IMAGES_DIR = path.resolve('public/images/left');
-const MODEL_PATH = path.resolve('public/models/yolo26m.onnx');
+const MODEL_PATH = path.resolve('public/models/yolo26x.onnx');
 const OUTPUT_JSON_PATH = path.resolve('public/detections.json');
 
-const YOLO_INPUT_SIZE = 640;
+const YOLO_INPUT_SIZE = 1280;
 const MIN_STORE_SCORE = 0.15;
 const NMS_IOU_THRESHOLD = 0.45;
 
@@ -154,7 +154,7 @@ async function main() {
   const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
   const filenames = parsed.data.map((row) => row.filename?.trim()).filter(Boolean);
 
-  addLog(`対象画像数: ${filenames.length} 枚。YOLO26n モデルをロード中...`);
+  addLog(`対象画像数: ${filenames.length} 枚。${path.basename(MODEL_PATH)} モデルをロード中...`);
 
   const detectionsMap = {};
   let detectedImagesCount = 0;

@@ -354,18 +354,18 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
 
   // 左矢印（←）：画面左側の画像へ移動
   const moveLeft = () => {
-    if (currentImageIdx < images.length - 1) {
-      const next = images[currentImageIdx + 1];
-      setTargetCameraPos([next.position[0], next.position[1]]);
+    if (currentImageIdx > 0) {
+      const prev = images[currentImageIdx - 1];
+      setTargetCameraPos([prev.position[0], prev.position[1]]);
       setNavTrigger((n) => n + 1);
     }
   };
 
-  // 右矢印（→）：画面右側の画像へ移動
+  // 右矢印（→）：画面右側の画像（次の画像）へ移動
   const moveRight = () => {
-    if (currentImageIdx > 0) {
-      const prev = images[currentImageIdx - 1];
-      setTargetCameraPos([prev.position[0], prev.position[1]]);
+    if (currentImageIdx < images.length - 1) {
+      const next = images[currentImageIdx + 1];
+      setTargetCameraPos([next.position[0], next.position[1]]);
       setNavTrigger((n) => n + 1);
     }
   };

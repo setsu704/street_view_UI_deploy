@@ -18,7 +18,7 @@ const processImagesForPanorama = (logs: LogEntry[], width: number): ImageItem[] 
     if (i > 0) {
       const stepX = dxNum ? dxNum / 100 : width;
       const stepY = dyNum ? dyNum / 100 : 0;
-      accumulatedX -= stepX;
+      accumulatedX += stepX;
       accumulatedY += stepY;
     }
 

@@ -9,6 +9,7 @@ export interface LogEntry {
 export interface ImageItem {
   id: number;
   url: string;
+  originalUrl?: string;
   position: [number, number, number];
   filename: string;
 }

@@ -10,6 +10,13 @@ export const CSV_OPTIONS = [
   { id: 'images_a_100.csv', label: '100', imageDir: '/images/output' },
 ] as const;
 
+// CSVのファイル名（_a_50.png や _a_100.png など）から left フォルダ内の元画像名（.jpg）を生成
+const toOriginalLeftFilename = (filename: string): string => {
+  return filename
+    .replace(/_a_(0_0|50|100)(?=\.[^.]+$)/i, '')
+    .replace(/\.png$/i, '.jpg');
+};
+
 const processImagesForPanorama = (
   logs: LogEntry[],
   width: number,
@@ -34,9 +41,12 @@ const processImagesForPanorama = (
     }
 
     const cleanFilename = log.filename.trim();
+    const originalFilename = toOriginalLeftFilename(cleanFilename);
+
     result.push({
       id: i,
       url: `${imageDir}/${cleanFilename}`,
+      originalUrl: `/images/left/${originalFilename}`,
       position: [accumulatedX, accumulatedY, 0],
       filename: cleanFilename,
     });
@@ -50,7 +60,7 @@ export default function App() {
   const [detectionData, setDetectionData] = useState<DetectionsJson | null>(null);
   const [errorText, setErrorText] = useState<string>('');
 
-  // 1. 選択されたCSVの読み込み（csvIdとセットで保持して不整合を防ぐ）
+  // 1. 選択されたCSVの読み込み
   useEffect(() => {
     let isCancelled = false;
 
@@ -108,7 +118,6 @@ export default function App() {
     };
   }, []);
 
-  // 現在選択中のCSVと読み込み済みCSVが一致しているときだけ画像を生成する
   const images = useMemo(() => {
     if (!loadedData || loadedData.csvId !== selectedCsv) return [];
     const opt = CSV_OPTIONS.find((o) => o.id === selectedCsv) || CSV_OPTIONS[0];

@@ -153,6 +153,7 @@ const TomatoBoundingBoxes = ({ detections }: { detections: DetectionBox[] }) => 
 // 3D空間上の各画像パネル（上段：メイン画像 / 下段：比較用元画像）
 const ImagePanel = ({
   url,
+  originalUrl,
   position,
   index,
   detections = [],
@@ -160,6 +161,7 @@ const ImagePanel = ({
   showOriginalBelow = false,
 }: {
   url: string;
+  originalUrl: string;
   position: [number, number, number];
   index: number;
   detections?: DetectionBox[];
@@ -205,13 +207,15 @@ const ImagePanel = ({
   });
 
   const bottomOffsetY = -(IMAGE_HEIGHT + ROW_GAP);
+  // 「元画像のみ」モードの場合は上段も left の元画像を表示
+  const topImageUrl = showDetections ? url : originalUrl;
 
   return (
     <group ref={groupRef} position={[position[0], position[1], position[2]]} renderOrder={index}>
       <group position={[0, 0, 0]}>
         <DreiImage
           ref={topMeshRef}
-          url={url}
+          url={topImageUrl}
           scale={[IMAGE_WIDTH, IMAGE_HEIGHT]}
           transparent
           opacity={OPACITY_INVISIBLE}
@@ -224,7 +228,7 @@ const ImagePanel = ({
         <group position={[0, bottomOffsetY, 0]}>
           <DreiImage
             ref={bottomMeshRef}
-            url={url}
+            url={originalUrl}
             scale={[IMAGE_WIDTH, IMAGE_HEIGHT]}
             transparent
             opacity={OPACITY_INVISIBLE}
@@ -813,6 +817,7 @@ export function PanoramaView({
               key={`${selectedCsv}-${img.id}`}
               index={idx}
               url={img.url}
+              originalUrl={img.originalUrl || img.url}
               position={img.position}
               detections={filteredDetectionsMap[img.filename]}
               showDetections={showDetections}

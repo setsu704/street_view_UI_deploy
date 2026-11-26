@@ -9,6 +9,7 @@ const CSV_SOURCES = [
   { csvPath: 'public/images_a_0_0.csv', imagesDir: 'public/images/left' },
   { csvPath: 'public/images_a_50.csv', imagesDir: 'public/images/output(a_50)' },
   { csvPath: 'public/images_a_100.csv', imagesDir: 'public/images/output' },
+  { csvPath: 'public/images_20261119.csv', imagesDir: 'public/images02/2_flower_1_right' },
 ];
 const MODEL_PATH = path.resolve('public/models/yolo26x.onnx');
 const OUTPUT_PATH = path.resolve('public/detections.json');
@@ -223,22 +224,41 @@ async function main() {
   };
 
   addLog('CSVファイルを読み込み中...');
-  const targetMap = new Map(); // filename -> fullImagePath
+  const targetMap = new Map(); // filename -> { imagePath, csvNames: Set<string> }
+  const csvStats = new Map(); // csvName -> { totalImages: number, detectedImages: number, totalBoxes: number }
 
   for (const source of CSV_SOURCES) {
+    const csvName = path.basename(source.csvPath);
     const fullCsvPath = path.resolve(source.csvPath);
     if (!fs.existsSync(fullCsvPath)) {
       addLog(`警告: ${source.csvPath} が見つかりません`);
       continue;
     }
+
     const csvText = fs.readFileSync(fullCsvPath, 'utf-8');
     const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+    const uniqueInCsv = new Set();
+
     for (const row of parsed.data) {
       const name = row.filename?.trim();
-      if (name && !targetMap.has(name)) {
-        targetMap.set(name, path.resolve(source.imagesDir, name));
+      if (!name) continue;
+      uniqueInCsv.add(name);
+
+      if (!targetMap.has(name)) {
+        targetMap.set(name, {
+          imagePath: path.resolve(source.imagesDir, name),
+          csvNames: new Set([csvName]),
+        });
+      } else {
+        targetMap.get(name).csvNames.add(csvName);
       }
     }
+
+    csvStats.set(csvName, {
+      totalImages: uniqueInCsv.size,
+      detectedImages: 0,
+      totalBoxes: 0,
+    });
   }
 
   const targets = Array.from(targetMap.entries());
@@ -276,17 +296,18 @@ async function main() {
   saveProgressAtomic(state);
 
   for (let i = 0; i < targets.length; i++) {
-    const [filename, imagePath] = targets[i];
+    const [filename, info] = targets[i];
+    const csvTag = Array.from(info.csvNames).join(', ');
 
-    if (!fs.existsSync(imagePath)) {
-      addLog(`[${i + 1}/${targets.length}] スキップ (画像なし): ${filename}`);
+    if (!fs.existsSync(info.imagePath)) {
+      addLog(`[${i + 1}/${targets.length}] [${csvTag}] スキップ (画像なし): ${filename}`);
       state.processedImages = i + 1;
       saveProgressAtomic(state);
       continue;
     }
 
     const startTime = Date.now();
-    const { tensor, origW, origH, scale, padX, padY } = await preprocessImage(imagePath);
+    const { tensor, origW, origH, scale, padX, padY } = await preprocessImage(info.imagePath);
     const results = await session.run({ [inputName]: tensor });
     const outputTensor = results[session.outputNames[0]];
     const boxes = parseYoloOutput(outputTensor, origW, origH, scale, padX, padY);
@@ -294,19 +315,33 @@ async function main() {
 
     state.detections[filename] = boxes;
     state.processedImages = i + 1;
+
     if (boxes.length > 0) {
       state.detectedImagesCount += 1;
       state.totalBoxesCount += boxes.length;
+
+      for (const csvName of info.csvNames) {
+        const stat = csvStats.get(csvName);
+        if (stat) {
+          stat.detectedImages += 1;
+          stat.totalBoxes += boxes.length;
+        }
+      }
     }
 
-    addLog(`[${i + 1}/${targets.length}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)`);
+    addLog(`[${i + 1}/${targets.length}] [${csvTag}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)`);
     saveProgressAtomic(state);
   }
 
   state.status = 'completed';
   state.completedAt = new Date().toISOString();
+
+  addLog('--- CSVファイル別 検出結果集計 ---');
+  for (const [csvName, stat] of csvStats.entries()) {
+    addLog(`・${csvName}: ${stat.totalBoxes}個検出 (${stat.detectedImages}/${stat.totalImages}枚で反応)`);
+  }
   addLog(
-    `完了！全 ${targets.length} 枚中 ${state.detectedImagesCount} 枚から計 ${state.totalBoxesCount} 個のトマトを検出しました。`
+    `完了！全体 ${targets.length} 枚中 ${state.detectedImagesCount} 枚から計 ${state.totalBoxesCount} 個検出しました。`
   );
   saveProgressAtomic(state);
 }

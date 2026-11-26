@@ -8,15 +8,16 @@ export const CSV_OPTIONS = [
   { id: 'images_a_0_0.csv', label: '0_0', imageDir: '/images/left' },
   { id: 'images_a_50.csv', label: '50', imageDir: '/images/output(a_50)' },
   { id: 'images_a_100.csv', label: '100', imageDir: '/images/output' },
+  { id: 'images_20261119.csv', label: '20261119', imageDir: '/images02/2_flower_1_right' },
 ] as const;
 
-// ファイル名から「left_日付_時刻」部分を抽出して left フォルダ内の元画像名（.jpg）を生成
-const toOriginalLeftFilename = (filename: string): string => {
+// 元画像URLを取得（images_a_*系は left フォルダの .jpg、それ以外は自身の画像を使用）
+const getOriginalImageUrl = (filename: string, imageDir: string): string => {
   const match = filename.match(/^(left_\d+_\d+)/i);
-  if (match) {
-    return `${match[1]}.jpg`;
+  if (match && imageDir.startsWith('/images/')) {
+    return `/images/left/${match[1]}.jpg`;
   }
-  return filename.replace(/\.png$/i, '.jpg');
+  return `${imageDir}/${filename}`;
 };
 
 const processImagesForPanorama = (
@@ -43,12 +44,11 @@ const processImagesForPanorama = (
     }
 
     const cleanFilename = log.filename.trim();
-    const originalFilename = toOriginalLeftFilename(cleanFilename);
 
     result.push({
       id: i,
       url: `${imageDir}/${cleanFilename}`,
-      originalUrl: `/images/left/${originalFilename}`,
+      originalUrl: getOriginalImageUrl(cleanFilename, imageDir),
       position: [accumulatedX, accumulatedY, 0],
       filename: cleanFilename,
     });

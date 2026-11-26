@@ -1,57 +1,75 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import Papa from 'papaparse';
-import * as ort from 'onnxruntime-node';
 import sharp from 'sharp';
+import * as ort from 'onnxruntime-node';
 
 // --- 設定 ---
-const CSV_PATH = path.resolve('public/images_a_0_0.csv');
-const IMAGES_DIR = path.resolve('public/images/left');
+const CSV_SOURCES = [
+  { csvPath: 'public/images_a_0_0.csv', imagesDir: 'public/images/left' },
+  { csvPath: 'public/images_a_50.csv', imagesDir: 'public/images/output(a_50)' },
+  { csvPath: 'public/images_a_100.csv', imagesDir: 'public/images/output' },
+];
 const MODEL_PATH = path.resolve('public/models/yolo26x.onnx');
-const OUTPUT_JSON_PATH = path.resolve('public/detections.json');
+const OUTPUT_PATH = path.resolve('public/detections.json');
 
-const YOLO_INPUT_SIZE = 1280;
-const MIN_STORE_SCORE = 0.15;
-const NMS_IOU_THRESHOLD = 0.45;
+const YOLO_INPUT_SIZE = 1280; // エクスポート時の imgsz と合わせる（640の場合は640に変更）
+const CONFIDENCE_THRESHOLD = 0.25;
+const IOU_THRESHOLD = 0.45;
 
-// NMS（重複枠の統合）
+// 誤検出防止フィルタ（COCO事前学習モデル使用時）
+const ALLOWED_TOMATO_CLASS_IDS = new Set([47, 49, 32]); // 47: apple, 49: orange, 32: sports ball
+const MIN_ASPECT_RATIO = 0.60;
+const MAX_ASPECT_RATIO = 1.65;
+const MIN_BOX_AREA_RATIO = 0.0005;
+const MAX_BOX_AREA_RATIO = 0.18;
+
+const COCO_CLASSES = [
+  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+  'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+  'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
+  'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
+  'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
+  'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+  'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+  'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+  'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator',
+  'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush',
+];
+
+function computeIoU(a, b) {
+  const x1 = Math.max(a.x1, b.x1);
+  const y1 = Math.max(a.y1, b.y1);
+  const x2 = Math.min(a.x2, b.x2);
+  const y2 = Math.min(a.y2, b.y2);
+  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
+  const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+  const union = areaA + areaB - inter;
+  return union <= 0 ? 0 : inter / union;
+}
+
 function applyNMS(boxes, iouThreshold) {
-  if (boxes.length === 0) return [];
   const sorted = [...boxes].sort((a, b) => b.score - a.score);
   const selected = [];
-
-  while (sorted.length > 0) {
-    const current = sorted.shift();
-    selected.push(current);
-
-    for (let i = sorted.length - 1; i >= 0; i--) {
-      const other = sorted[i];
-      const interX1 = Math.max(current.x1, other.x1);
-      const interY1 = Math.max(current.y1, other.y1);
-      const interX2 = Math.min(current.x2, other.x2);
-      const interY2 = Math.min(current.y2, other.y2);
-
-      const interArea = Math.max(0, interX2 - interX1) * Math.max(0, interY2 - interY1);
-      const areaA = (current.x2 - current.x1) * (current.y2 - current.y1);
-      const areaB = (other.x2 - other.x1) * (other.y2 - other.y1);
-      const unionArea = areaA + areaB - interArea;
-
-      if (unionArea > 0 && interArea / unionArea > iouThreshold) {
-        sorted.splice(i, 1);
+  for (const candidate of sorted) {
+    let keep = true;
+    for (const chosen of selected) {
+      if (computeIoU(candidate, chosen) > iouThreshold) {
+        keep = false;
+        break;
       }
     }
+    if (keep) selected.push(candidate);
   }
   return selected;
 }
 
-// 1枚の画像を推論
-async function detectImage(session, imagePath) {
+async function preprocessImage(imagePath) {
   const image = sharp(imagePath);
   const metadata = await image.metadata();
   const origW = metadata.width;
   const origH = metadata.height;
-
-  if (!origW || !origH) return [];
 
   const scale = Math.min(YOLO_INPUT_SIZE / origW, YOLO_INPUT_SIZE / origH);
   const newW = Math.round(origW * scale);
@@ -59,7 +77,7 @@ async function detectImage(session, imagePath) {
   const padX = Math.floor((YOLO_INPUT_SIZE - newW) / 2);
   const padY = Math.floor((YOLO_INPUT_SIZE - newH) / 2);
 
-  const { data: rawBuffer } = await image
+  const { data } = await image
     .resize(newW, newH)
     .extend({
       top: padY,
@@ -72,157 +90,228 @@ async function detectImage(session, imagePath) {
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const stride = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
-  const float32Data = new Float32Array(3 * stride);
-  for (let i = 0; i < stride; i++) {
-    float32Data[i] = rawBuffer[i * 3] / 255.0;
-    float32Data[i + stride] = rawBuffer[i * 3 + 1] / 255.0;
-    float32Data[i + stride * 2] = rawBuffer[i * 3 + 2] / 255.0;
+  const pixelCount = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
+  const float32Data = new Float32Array(3 * pixelCount);
+
+  for (let i = 0; i < pixelCount; i++) {
+    float32Data[i] = data[i * 3] / 255.0;
+    float32Data[pixelCount + i] = data[i * 3 + 1] / 255.0;
+    float32Data[2 * pixelCount + i] = data[i * 3 + 2] / 255.0;
   }
 
-  const inputTensor = new ort.Tensor('float32', float32Data, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
-  const results = await session.run({ [session.inputNames[0]]: inputTensor });
-  const output = results[session.outputNames[0]];
-  const data = output.data;
-  const dims = output.dims;
+  return {
+    tensor: new ort.Tensor('float32', float32Data, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]),
+    origW,
+    origH,
+    scale,
+    padX,
+    padY,
+  };
+}
 
+function parseYoloOutput(outputTensor, origW, origH, scale, padX, padY) {
+  const dims = outputTensor.dims;
+  const data = outputTensor.data;
   const rawBoxes = [];
-  const toNormalizedBox = (bx1, by1, bx2, by2, score) => ({
-    x1: Math.max(0, Math.min(1, (bx1 - padX) / newW)),
-    y1: Math.max(0, Math.min(1, (by1 - padY) / newH)),
-    x2: Math.max(0, Math.min(1, (bx2 - padX) / newW)),
-    y2: Math.max(0, Math.min(1, (by2 - padY) / newH)),
-    score: Number(score.toFixed(4)),
-    label: 'tomato',
-  });
 
   if (dims.length === 3 && dims[2] === 6) {
     const numDetections = dims[1];
     for (let i = 0; i < numDetections; i++) {
       const offset = i * 6;
+      const x1 = data[offset];
+      const y1 = data[offset + 1];
+      const x2 = data[offset + 2];
+      const y2 = data[offset + 3];
       const score = data[offset + 4];
-      if (score >= MIN_STORE_SCORE) {
-        rawBoxes.push(
-          toNormalizedBox(data[offset], data[offset + 1], data[offset + 2], data[offset + 3], score)
-        );
-      }
+      const classId = Math.round(data[offset + 5]);
+
+      if (score < CONFIDENCE_THRESHOLD) continue;
+      if (!ALLOWED_TOMATO_CLASS_IDS.has(classId)) continue;
+
+      const rawLabel = COCO_CLASSES[classId] || `class_${classId}`;
+      rawBoxes.push({ x1, y1, x2, y2, score, classId, label: 'tomato', rawLabel });
     }
   } else if (dims.length === 3) {
     const numChannels = dims[1];
     const numAnchors = dims[2];
+    const numClasses = numChannels - 4;
+    const isCustomSingleClass = numClasses === 1;
+
     for (let i = 0; i < numAnchors; i++) {
       let maxScore = 0;
-      for (let c = 4; c < numChannels; c++) {
-        const s = data[c * numAnchors + i];
-        if (s > maxScore) maxScore = s;
+      let bestClassId = 0;
+      for (let c = 0; c < numClasses; c++) {
+        const score = data[(4 + c) * numAnchors + i];
+        if (score > maxScore) {
+          maxScore = score;
+          bestClassId = c;
+        }
       }
-      if (maxScore >= MIN_STORE_SCORE) {
-        const cx = data[0 * numAnchors + i];
-        const cy = data[1 * numAnchors + i];
-        const w = data[2 * numAnchors + i];
-        const h = data[3 * numAnchors + i];
-        rawBoxes.push(
-          toNormalizedBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, maxScore)
-        );
-      }
+
+      if (maxScore < CONFIDENCE_THRESHOLD) continue;
+      if (!isCustomSingleClass && !ALLOWED_TOMATO_CLASS_IDS.has(bestClassId)) continue;
+
+      const cx = data[0 * numAnchors + i];
+      const cy = data[1 * numAnchors + i];
+      const w = data[2 * numAnchors + i];
+      const h = data[3 * numAnchors + i];
+
+      const rawLabel = isCustomSingleClass
+        ? 'tomato'
+        : COCO_CLASSES[bestClassId] || `class_${bestClassId}`;
+
+      rawBoxes.push({
+        x1: cx - w / 2,
+        y1: cy - h / 2,
+        x2: cx + w / 2,
+        y2: cy + h / 2,
+        score: maxScore,
+        classId: bestClassId,
+        label: 'tomato',
+        rawLabel,
+      });
     }
   }
 
-  return applyNMS(rawBoxes, NMS_IOU_THRESHOLD);
-}
+  const normalized = [];
+  for (const box of rawBoxes) {
+    const x1 = Math.max(0, Math.min(origW, (box.x1 - padX) / scale)) / origW;
+    const y1 = Math.max(0, Math.min(origH, (box.y1 - padY) / scale)) / origH;
+    const x2 = Math.max(0, Math.min(origW, (box.x2 - padX) / scale)) / origW;
+    const y2 = Math.max(0, Math.min(origH, (box.y2 - padY) / scale)) / origH;
 
-// 途中経過をJSONファイルへ逐次書き出しする関数
-function saveProgressJson(payload) {
-  const tempPath = `${OUTPUT_JSON_PATH}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), 'utf-8');
-  fs.renameSync(tempPath, OUTPUT_JSON_PATH); // 読み込み中のファイル破損を防ぐためアトミックに置換
-}
+    const boxW = x2 - x1;
+    const boxH = y2 - y1;
+    if (boxW <= 0.005 || boxH <= 0.005) continue;
 
-// メイン処理
-async function main() {
-  const logs = [];
-  const addLog = (msg) => {
-    const time = new Date().toLocaleTimeString('ja-JP');
-    const line = `[${time}] ${msg}`;
-    console.log(line);
-    logs.push(line);
-    if (logs.length > 50) logs.shift(); // サイト表示用に最新50件を保持
-  };
+    // 縦横比と面積による形状フィルタ
+    const pixelW = boxW * origW;
+    const pixelH = boxH * origH;
+    const aspectRatio = pixelW / pixelH;
+    const areaRatio = boxW * boxH;
 
-  addLog('CSVファイルを読み込み中...');
-  const csvText = fs.readFileSync(CSV_PATH, 'utf-8');
-  const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-  const filenames = parsed.data.map((row) => row.filename?.trim()).filter(Boolean);
+    if (aspectRatio < MIN_ASPECT_RATIO || aspectRatio > MAX_ASPECT_RATIO) continue;
+    if (areaRatio < MIN_BOX_AREA_RATIO || areaRatio > MAX_BOX_AREA_RATIO) continue;
 
-  addLog(`対象画像数: ${filenames.length} 枚。${path.basename(MODEL_PATH)} モデルをロード中...`);
-
-  const detectionsMap = {};
-  let detectedImagesCount = 0;
-  let totalBoxesCount = 0;
-
-  // 開始状態をJSONに書き出し
-  saveProgressJson({
-    status: 'running',
-    generatedAt: new Date().toISOString(),
-    totalImages: filenames.length,
-    processedImages: 0,
-    detectedImagesCount: 0,
-    totalBoxesCount: 0,
-    logs: [...logs],
-    detections: detectionsMap,
-  });
-
-  const session = await ort.InferenceSession.create(MODEL_PATH);
-  addLog('モデルロード完了。推論を開始します...');
-
-  for (let i = 0; i < filenames.length; i++) {
-    const filename = filenames[i];
-    const imagePath = path.join(IMAGES_DIR, filename);
-
-    if (!fs.existsSync(imagePath)) {
-      addLog(`[${i + 1}/${filenames.length}] スキップ (ファイルなし): ${filename}`);
-      detectionsMap[filename] = [];
-    } else {
-      const start = performance.now();
-      const boxes = await detectImage(session, imagePath);
-      const elapsed = Math.round(performance.now() - start);
-
-      detectionsMap[filename] = boxes;
-      if (boxes.length > 0) detectedImagesCount++;
-      totalBoxesCount += boxes.length;
-
-      addLog(`[${i + 1}/${filenames.length}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)`);
-    }
-
-    // 1枚終わるごとに途中経過を保存（サイト側がこれをリアルタイムに読み取る）
-    saveProgressJson({
-      status: 'running',
-      generatedAt: new Date().toISOString(),
-      totalImages: filenames.length,
-      processedImages: i + 1,
-      detectedImagesCount,
-      totalBoxesCount,
-      logs: [...logs],
-      detections: detectionsMap,
+    normalized.push({
+      x1: Number(x1.toFixed(4)),
+      y1: Number(y1.toFixed(4)),
+      x2: Number(x2.toFixed(4)),
+      y2: Number(y2.toFixed(4)),
+      score: Number(box.score.toFixed(4)),
+      classId: box.classId,
+      label: box.label,
+      rawLabel: box.rawLabel,
     });
   }
 
-  addLog(`全処理完了! ${detectedImagesCount}/${filenames.length} 枚で検出（合計 ${totalBoxesCount} 個）`);
-
-  // 最終完了状態を保存
-  saveProgressJson({
-    status: 'completed',
-    generatedAt: new Date().toISOString(),
-    totalImages: filenames.length,
-    processedImages: filenames.length,
-    detectedImagesCount,
-    totalBoxesCount,
-    logs: [...logs],
-    detections: detectionsMap,
-  });
-
-  console.log('--------------------------------------------------');
-  console.log(`保存完了: ${OUTPUT_JSON_PATH}`);
+  return applyNMS(normalized, IOU_THRESHOLD);
 }
 
-main().catch(console.error);
+function saveProgressAtomic(state) {
+  const tempPath = `${OUTPUT_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), 'utf-8');
+  fs.renameSync(tempPath, OUTPUT_PATH);
+}
+
+async function main() {
+  const logs = [];
+  const addLog = (msg) => {
+    const line = `[${new Date().toLocaleTimeString('ja-JP')}] ${msg}`;
+    console.log(line);
+    logs.push(line);
+  };
+
+  addLog('CSVファイルを読み込み中...');
+  const targetMap = new Map(); // filename -> fullImagePath
+
+  for (const source of CSV_SOURCES) {
+    const fullCsvPath = path.resolve(source.csvPath);
+    if (!fs.existsSync(fullCsvPath)) {
+      addLog(`警告: ${source.csvPath} が見つかりません`);
+      continue;
+    }
+    const csvText = fs.readFileSync(fullCsvPath, 'utf-8');
+    const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+    for (const row of parsed.data) {
+      const name = row.filename?.trim();
+      if (name && !targetMap.has(name)) {
+        targetMap.set(name, path.resolve(source.imagesDir, name));
+      }
+    }
+  }
+
+  const targets = Array.from(targetMap.entries());
+
+  const state = {
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    totalImages: targets.length,
+    processedImages: 0,
+    detectedImagesCount: 0,
+    totalBoxesCount: 0,
+    logs,
+    detections: {},
+  };
+
+  saveProgressAtomic(state);
+
+  if (!fs.existsSync(MODEL_PATH)) {
+    addLog(`エラー: モデルファイルが見つかりません (${MODEL_PATH})`);
+    state.status = 'error';
+    saveProgressAtomic(state);
+    process.exit(1);
+  }
+
+  addLog(`対象画像数: ${targets.length} 枚。${path.basename(MODEL_PATH)} モデルをロード中...`);
+  saveProgressAtomic(state);
+
+  const session = await ort.InferenceSession.create(MODEL_PATH, {
+    executionProviders: ['cpu'],
+  });
+  const inputName = session.inputNames[0];
+
+  addLog('モデルロード完了。推論を開始します...');
+  saveProgressAtomic(state);
+
+  for (let i = 0; i < targets.length; i++) {
+    const [filename, imagePath] = targets[i];
+
+    if (!fs.existsSync(imagePath)) {
+      addLog(`[${i + 1}/${targets.length}] スキップ (画像なし): ${filename}`);
+      state.processedImages = i + 1;
+      saveProgressAtomic(state);
+      continue;
+    }
+
+    const startTime = Date.now();
+    const { tensor, origW, origH, scale, padX, padY } = await preprocessImage(imagePath);
+    const results = await session.run({ [inputName]: tensor });
+    const outputTensor = results[session.outputNames[0]];
+    const boxes = parseYoloOutput(outputTensor, origW, origH, scale, padX, padY);
+    const elapsed = Date.now() - startTime;
+
+    state.detections[filename] = boxes;
+    state.processedImages = i + 1;
+    if (boxes.length > 0) {
+      state.detectedImagesCount += 1;
+      state.totalBoxesCount += boxes.length;
+    }
+
+    addLog(`[${i + 1}/${targets.length}] ${filename}: ${boxes.length}個検出 (${elapsed}ms)`);
+    saveProgressAtomic(state);
+  }
+
+  state.status = 'completed';
+  state.completedAt = new Date().toISOString();
+  addLog(
+    `完了！全 ${targets.length} 枚中 ${state.detectedImagesCount} 枚から計 ${state.totalBoxesCount} 個のトマトを検出しました。`
+  );
+  saveProgressAtomic(state);
+}
+
+main().catch((err) => {
+  console.error('推論中にエラーが発生しました:', err);
+  process.exit(1);
+});

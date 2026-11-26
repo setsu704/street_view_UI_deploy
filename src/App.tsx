@@ -3,7 +3,18 @@ import Papa, { type ParseResult } from 'papaparse';
 import type { DetectionsJson, ImageItem, LogEntry } from './types/panorama';
 import { PanoramaView, IMAGE_WIDTH } from './components/PanoramaView';
 
-const processImagesForPanorama = (logs: LogEntry[], width: number): ImageItem[] => {
+// 選択可能なCSV一覧とそれぞれの画像フォルダ
+export const CSV_OPTIONS = [
+  { id: 'images_a_0_0.csv', label: '0_0', imageDir: '/images/left' },
+  { id: 'images_a_50.csv', label: '50', imageDir: '/images/output(a_50)' },
+  { id: 'images_a_100.csv', label: '100', imageDir: '/images/output' },
+] as const;
+
+const processImagesForPanorama = (
+  logs: LogEntry[],
+  width: number,
+  imageDir: string
+): ImageItem[] => {
   const result: ImageItem[] = [];
   let accumulatedX = 0;
   let accumulatedY = 0;
@@ -22,25 +33,33 @@ const processImagesForPanorama = (logs: LogEntry[], width: number): ImageItem[] 
       accumulatedY += stepY;
     }
 
+    const cleanFilename = log.filename.trim();
     result.push({
       id: i,
-      url: `/images/left/${log.filename.trim()}`,
+      url: `${imageDir}/${cleanFilename}`,
       position: [accumulatedX, accumulatedY, 0],
-      filename: log.filename.trim(),
+      filename: cleanFilename,
     });
   }
   return result;
 };
 
 export default function App() {
+  const [selectedCsv, setSelectedCsv] = useState<string>(CSV_OPTIONS[0].id);
   const [rawLogs, setRawLogs] = useState<LogEntry[]>([]);
   const [detectionData, setDetectionData] = useState<DetectionsJson | null>(null);
   const [errorText, setErrorText] = useState<string>('');
   const [loading, setLoading] = useState(true);
 
-  // 1. CSVの読み込み
+  const currentOption = useMemo(
+    () => CSV_OPTIONS.find((opt) => opt.id === selectedCsv) || CSV_OPTIONS[0],
+    [selectedCsv]
+  );
+
+  // 1. 選択されたCSVの読み込み
   useEffect(() => {
-    Papa.parse<LogEntry>('/images_a_0_0.csv', {
+    setLoading(true);
+    Papa.parse<LogEntry>(`/${selectedCsv}`, {
       download: true,
       header: true,
       skipEmptyLines: true,
@@ -49,10 +68,11 @@ export default function App() {
         setLoading(false);
       },
       error: () => {
+        setRawLogs([]);
         setLoading(false);
       },
     });
-  }, []);
+  }, [selectedCsv]);
 
   // 2. detections.json の取得＆実行中のリアルタイム監視（1秒間隔）
   useEffect(() => {
@@ -61,7 +81,6 @@ export default function App() {
 
     const fetchDetections = async () => {
       try {
-        // キャッシュを回避して最新の途中経過を取得
         const res = await fetch(`/detections.json?t=${Date.now()}`);
         if (!res.ok) throw new Error('detections.json が見つかりません');
         const json = (await res.json()) as DetectionsJson;
@@ -70,14 +89,12 @@ export default function App() {
         setDetectionData(json);
         setErrorText('');
 
-        // まだ実行中（running）なら1秒後に再取得する
         if (json.status !== 'completed') {
           timerId = window.setTimeout(fetchDetections, 1000);
         }
       } catch {
         if (!isMounted) return;
         setErrorText('事前検出データなし (npm run detect を実行してください)');
-        // ファイルが作られるのを待つため2秒後に再試行
         timerId = window.setTimeout(fetchDetections, 2000);
       }
     };
@@ -90,9 +107,12 @@ export default function App() {
     };
   }, []);
 
-  const images = useMemo(() => processImagesForPanorama(rawLogs, IMAGE_WIDTH), [rawLogs]);
+  const images = useMemo(
+    () => processImagesForPanorama(rawLogs, IMAGE_WIDTH, currentOption.imageDir),
+    [rawLogs, currentOption.imageDir]
+  );
 
-  if (loading) {
+  if (loading && rawLogs.length === 0) {
     return (
       <div style={{ color: '#fff', background: '#000', height: '100vh', padding: '20px' }}>
         データを読み込み中...
@@ -105,6 +125,8 @@ export default function App() {
       images={images}
       detectionData={detectionData}
       errorText={errorText}
+      selectedCsv={selectedCsv}
+      onSelectCsv={setSelectedCsv}
     />
   );
 }

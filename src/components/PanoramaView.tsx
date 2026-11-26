@@ -3,6 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Image as DreiImage, OrbitControls, PerspectiveCamera, Grid, Line, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import type { DetectionBox, DetectionsJson, ImageItem } from '../types/panorama';
+import { CSV_OPTIONS } from '../App';
 
 const BUILD_TIME = new Date().toLocaleString('ja-JP', {
   timeZone: 'Asia/Tokyo',
@@ -320,9 +321,17 @@ interface PanoramaViewProps {
   images: ImageItem[];
   detectionData: DetectionsJson | null;
   errorText: string;
+  selectedCsv: string;
+  onSelectCsv: (csv: string) => void;
 }
 
-export function PanoramaView({ images, detectionData, errorText }: PanoramaViewProps) {
+export function PanoramaView({
+  images,
+  detectionData,
+  errorText,
+  selectedCsv,
+  onSelectCsv,
+}: PanoramaViewProps) {
   const initialPos = images[0]?.position || [0, 0, 0];
 
   const [targetCameraPos, setTargetCameraPos] = useState<[number, number]>([initialPos[0], initialPos[1]]);
@@ -352,7 +361,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
     return idx === -1 ? 0 : idx;
   }, [images, targetCameraPos]);
 
-  // 左矢印（←）：画面左側の画像へ移動
+  // 左矢印（←）：画面左側の画像（前の画像）へ移動
   const moveLeft = () => {
     if (currentImageIdx > 0) {
       const prev = images[currentImageIdx - 1];
@@ -521,7 +530,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
             </div>
 
             {leftTab === 'current' ? (
-              /* 現在表示中の画像の各ボックス詳細（ラベル・類似度/確信度・座標・サイズ） */
+              /* 現在表示中の画像の各ボックス詳細 */
               <div
                 style={{
                   maxHeight: '220px',
@@ -584,7 +593,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
                 )}
               </div>
             ) : (
-              /* 全体実行ログ（横スクロール対応で最後まで表示） */
+              /* 全体実行ログ */
               <div
                 ref={logContainerRef}
                 style={{
@@ -619,6 +628,55 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
       <div style={controlPanelStyle}>
         <div style={{ fontWeight: 'bold', marginBottom: '10px', color: '#00ffcc' }}>Display Controls</div>
 
+        {/* CSVデータセット切り替え用ミニヘッダー */}
+        <div
+          style={{
+            marginBottom: '12px',
+            paddingBottom: '10px',
+            borderBottom: '1px solid #444',
+          }}
+        >
+          <div style={{ fontSize: '10px', color: '#a0aec0', marginBottom: '6px' }}>
+            CSVデータセット ({selectedCsv})
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              background: '#1a202c',
+              borderRadius: '6px',
+              padding: '2px',
+              border: '1px solid #4a5568',
+              gap: '2px',
+            }}
+          >
+            {CSV_OPTIONS.map((opt) => {
+              const isSelected = selectedCsv === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onSelectCsv(opt.id)}
+                  style={{
+                    flex: 1,
+                    padding: '4px 0',
+                    fontSize: '11px',
+                    fontWeight: isSelected ? 'bold' : 'normal',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    background: isSelected ? '#319795' : 'transparent',
+                    color: isSelected ? '#fff' : '#cbd5e0',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 表示モード選択ラジオボタン */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
           <label
             style={{
@@ -752,7 +810,7 @@ export function PanoramaView({ images, detectionData, errorText }: PanoramaViewP
         <Suspense fallback={null}>
           {images.map((img, idx) => (
             <ImagePanel
-              key={img.id}
+              key={`${selectedCsv}-${img.id}`}
               index={idx}
               url={img.url}
               position={img.position}
